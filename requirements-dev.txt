@@ -1,0 +1,6 @@
+jupyterlab
+jupyterlab_widgets
+notebook<7
+numpy<2
+twine
+wheel

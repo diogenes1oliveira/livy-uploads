@@ -1,0 +1,56 @@
+FROM eclipse-temurin:8u422-b05-jre-focal
+
+RUN apt-get update && \
+    apt-get install -y curl python3 python3-pip unzip sudo netcat dnsutils && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /etc/spark
+RUN curl -Lfv 'https://archive.apache.org/dist/spark/spark-3.2.1/spark-3.2.1-bin-hadoop3.2.tgz' > spark.tgz && \
+    tar -xvzf spark.tgz && \
+    rm -rf spark.tgz
+
+RUN mv spark-3.2.1-bin-hadoop3.2/* . && \
+    rm -rf spark-3.2.1-bin-hadoop3.2/
+
+WORKDIR /etc/livy
+RUN curl -Lfv 'https://dlcdn.apache.org/incubator/livy/0.8.0-incubating/apache-livy-0.8.0-incubating_2.12-bin.zip' > livy.zip && \
+    unzip livy.zip && \
+    mv apache-livy-0.8.0-incubating_2.12-bin/* . && \
+    rm -rf livy.zip apache-livy-0.8.0-incubating_2.12-bin/
+
+ENV PATH=/etc/spark/bin:/etc/livy/bin:$PATH \
+    SPARK_HOME=/etc/spark \
+    LIVY_HOME=/etc/livy \
+    SPARK_CONF_DIR=/etc/spark/conf \
+    SPARK_LOG_DIR=/var/log/spark \
+    SPARK_WORKER_DIR=/tmp/spark \
+    SPARK_PID_DIR=/run/spark \
+    LIVY_CONF_DIR=/etc/livy/conf \
+    LIVY_PID_DIR=/run/livy \
+    LIVY_LOG_DIR=/var/log/livy \
+    PYSPARK_PYTHON=/usr/bin/python3 \
+    PYSPARK_DRIVER_PYTHON=/usr/bin/python3
+
+ARG USERNAME=app
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+ENV USERNAME="$USERNAME" \
+    USER_UID="$USER_UID" \
+    USER_GID="$USER_GID" \
+    HOME="/home/$USERNAME"
+
+WORKDIR /app
+
+RUN echo "$USERNAME:x:$USER_GID:" >> /etc/group && \
+    echo "$USERNAME:x:$USER_UID:$USER_GID:$USERNAME:$HOME:/bin/bash" >> /etc/passwd && \
+    echo "$USERNAME:!::0:99999:7:::" >> /etc/shadow && \
+    echo "root ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    chmod 440 /etc/sudoers && \
+    mkdir -p "$HOME" /var/log "$SPARK_LOG_DIR" "$SPARK_PID_DIR" "$LIVY_CONF_DIR" "$LIVY_PID_DIR" "$LIVY_LOG_DIR" "$SPARK_WORKER_DIR" && \
+    chown -R "$USER_UID:$USER_GID" /app /var/log "$HOME" "$SPARK_LOG_DIR" "$SPARK_PID_DIR" "$LIVY_CONF_DIR" "$LIVY_PID_DIR" "$LIVY_LOG_DIR" "$SPARK_WORKER_DIR"
+
+USER "$USERNAME"
+
+CMD [ "bash", "/etc/livy/bin/livy-server" ]

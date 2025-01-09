@@ -1,0 +1,42 @@
+FROM python:3.6
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y curl unzip netcat tar krb5-config libkrb5-dev dnsutils && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /etc/app
+COPY ./requirements-dev.txt ./requirements-magics.txt ./
+RUN pip3 install --no-cache-dir -r ./requirements-dev.txt -r ./requirements-magics.txt
+
+RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | awk '{print $NF}')" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
+    echo >&2 "ERROR: couldn't find path to sparkmagic. OUTPUT: "; \
+    pip3 show sparkmagic 2>&1 | sed 's/^/>  /'; \
+    exit 1; \
+    fi; \
+    echo >&2 "INFO: using sparkmagic path: $SPARK_MAGIC_PATH" && \
+    jupyter-kernelspec install "$SPARK_MAGIC_PATH/sparkmagic/kernels/sparkkernel" && \
+    jupyter-kernelspec install "$SPARK_MAGIC_PATH/sparkmagic/kernels/pysparkkernel" && \
+    jupyter server extension enable --py sparkmagic
+
+ARG USERNAME=app
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+ENV USERNAME="$USERNAME" \
+    USER_UID="$USER_UID" \
+    USER_GID="$USER_GID" \
+    HOME="/home/$USERNAME"
+
+WORKDIR /app
+
+RUN echo "$USERNAME:x:$USER_GID:" >> /etc/group && \
+    echo "$USERNAME:x:$USER_UID:$USER_GID:$USERNAME:$HOME:/bin/bash" >> /etc/passwd && \
+    echo "$USERNAME:!::0:99999:7:::" >> /etc/shadow && \
+    echo "root ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    chmod 440 /etc/sudoers && \
+    mkdir -p "$HOME" /var/log && \
+    chown -R "$USER_UID:$USER_GID" /app /var/log "$HOME"
+
+USER "$USERNAME"

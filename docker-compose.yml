@@ -1,0 +1,137 @@
+version: "2.4"
+
+services:
+  livy:
+    depends_on:
+      - master
+    restart: unless-stopped
+    networks:
+      docker.internal:
+        aliases:
+          - livy.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    image: livy-uploads-dev-build:latest
+    hostname: livy
+    build:
+      context: .
+      dockerfile: ./Dockerfile.spark
+      args:
+        - USER_NAME=${USER_NAME:-app}
+        - USER_UID=${USER_UID?error}
+        - USER_GID=${USER_GID?error}
+    command:
+      - bash
+      - -c
+      - |
+        set -eu
+        export SPARK_MASTER_IP="$$(dig +short master.docker.internal)"
+        touch /var/log/livy-uploads-bg.log
+        tail -f /var/log/livy-uploads-bg.log &
+        bash /etc/livy/bin/livy-server
+    ports:
+      - 8998:8998
+      - 4040:4040
+    working_dir: /tmp
+    volumes:
+      - ./.dev/conf/spark:/etc/spark/conf
+      - ./.dev/conf/livy:/etc/livy/conf
+      - ./:/app:ro
+    environment:
+      - SPARK_PUBLIC_DNS=localhost
+      - BG_LOG_PATH=/var/log/livy-uploads-bg.log
+    mem_limit: 1g
+    cpus: 1
+
+  master:
+    networks:
+      docker.internal:
+        aliases:
+          - master.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    hostname: master
+    image: livy-uploads-dev-build:latest
+    mem_limit: 1g
+    cpus: 1
+    environment:
+      - SPARK_PUBLIC_DNS=localhost
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -eu
+        mkdir -p $$SPARK_LOG_DIR
+        touch $$SPARK_LOG_DIR/spark--org.apache.spark.deploy.master.Master-1-spark-master.out /var/log/livy-uploads-bg.log
+        /etc/spark/sbin/start-master.sh
+        tail -f $$SPARK_LOG_DIR/*.out /var/log/livy-uploads-bg.log
+    ports:
+      - 8080:8080 # master spark UI
+    volumes:
+      - ./.dev/conf/spark:/etc/spark/conf
+      - ./.dev/conf/livy:/etc/livy/conf
+  worker1:
+    depends_on:
+      - master
+    networks:
+      docker.internal:
+        aliases:
+          - worker1.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    image: livy-uploads-dev-build:latest
+    hostname: worker1
+    mem_limit: 1g
+    cpus: 1
+    environment:
+      - SPARK_PUBLIC_DNS=localhost
+      - BG_LOG_PATH=/var/log/livy-uploads-bg.log
+    ports:
+      - 8081:8081 # worker spark UI
+    command:
+      - /bin/bash
+      - -c
+      - |
+        export SPARK_MASTER_IP="$$(dig +short master.docker.internal)"
+        mkdir -p $$SPARK_LOG_DIR
+        touch $$SPARK_LOG_DIR/spark--org.apache.spark.deploy.worker.Worker-1-spark-worker1.out /var/log/livy-uploads-bg.log
+        /etc/spark/sbin/start-worker.sh spark://master.docker.internal:7077
+        tail -f $$SPARK_LOG_DIR/*.out /var/log/livy-uploads-bg.log
+    volumes:
+      - ./.dev/conf/spark:/etc/spark/conf
+      - ./.dev/conf/livy:/etc/livy/conf
+
+  jupyter:
+    depends_on:
+      - master
+    networks:
+      docker.internal:
+        aliases:
+          - jupyter.docker.internal
+    build:
+      context: .
+      dockerfile: ./Dockerfile.jupyter
+      args:
+        - USER_NAME=${USER_NAME:-app}
+        - USER_UID=${USER_UID?error}
+        - USER_GID=${USER_GID?error}
+    mem_limit: 1g
+    cpus: 1
+    ports:
+      - "8888:8888"
+    user: "${USER_NAME:-app}"
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |
+        set -eux
+        pip install -e .
+        exec jupyter lab --no-browser --allow-root --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token= --NotebookApp.password=
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ./.dev/conf/sparkmagic/:/home/${USER_NAME:-app}/.sparkmagic/
+
+networks:
+  docker.internal:
