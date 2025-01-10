@@ -19,6 +19,7 @@ dev/rm:
 
 .PHONY: publish
 publish:
+	@rm -rf dist/
 	@python3 setup.py sdist bdist_wheel
 	@bash -c "read -r -p 'Really publish (y/N)? ' response && [[ \$${response,,} == 'y' ]]"
 	@twine upload dist/*

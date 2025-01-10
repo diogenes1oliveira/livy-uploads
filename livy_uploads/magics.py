@@ -1,6 +1,4 @@
-from argparse import ArgumentParser
-import shlex
-
+from functools import wraps
 from IPython.core.magic import magics_class, Magics
 from IPython.core.magic import needs_local_scope, line_magic, cell_magic
 from IPython.core.magic_arguments import argument, magic_arguments
@@ -10,15 +8,29 @@ from sparkmagic.livyclientlib.exceptions import (
     handle_expected_exceptions,
     wrap_unexpected_exceptions,
     BadUserDataException,
+    SparkStatementException,
 )
+from hdijupyterutils.ipythondisplay import IpythonDisplay
 
 from livy_uploads.uploader import LivyUploader
+from livy_uploads.commander import LivyCommander
+
+
+def wrap_standard_exceptions(f):
+    @wraps(f)
+    def inner(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except ValueError as e:
+            raise SparkStatementException('bad input') from e
+    return inner
+
 
 @magics_class
 class LivyUploaderMagics(Magics):
     def __init__(self, shell):
         super().__init__(shell)
-        self.ipython_display = shell
+        self.ipython_display = IpythonDisplay()
         self.logger = SparkLog("LivyUploaderMagics")
 
     @magic_arguments()
@@ -40,6 +52,7 @@ class LivyUploaderMagics(Magics):
     @needs_local_scope
     @wrap_unexpected_exceptions
     @handle_expected_exceptions
+    @wrap_standard_exceptions
     def send_obj_to_spark(self, line, cell="", local_ns=None):
         if cell.strip():
             raise BadUserDataException(
@@ -159,6 +172,13 @@ class LivyUploaderMagics(Magics):
         default=None,
         help="Name of the Livy session to use. If not provided, uses the default one",
     )
+    @argument(
+        "-p",
+        "--pause",
+        type=float,
+        default=2.0,
+        help="Time between poll checks",
+    )
     @cell_magic
     @wrap_unexpected_exceptions
     @handle_expected_exceptions
@@ -172,12 +192,8 @@ class LivyUploaderMagics(Magics):
                 "Non-empty command must be provided in the cell"
             )
 
-        uploader = LivyUploader.from_ipython(session_name)
-        returncode, lines = uploader.run_command(['bash', '-c', cmd])
-        for line in lines:
-            print(line)
-
-        print(f'$ process finished with return code {returncode}')
+        commander = LivyCommander.from_ipython(session_name)
+        commander.run_command_fg(['bash', '-c', cmd], pause=args.pause)
 
 def load_ipython_extension(ipython):
     """

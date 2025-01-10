@@ -6,8 +6,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /etc/app
-COPY ./requirements-dev.txt ./requirements-magics.txt ./
-RUN pip3 install --no-cache-dir -r ./requirements-dev.txt -r ./requirements-magics.txt
+COPY ./requirements-magics.txt ./
+RUN pip3 install --no-cache-dir -r ./requirements-magics.txt
+COPY ./requirements-dev.txt ./
+RUN pip3 install --no-cache-dir -r ./requirements-dev.txt
+COPY ./requirements.txt ./
+RUN pip3 install --no-cache-dir -r ./requirements.txt
 
 RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | awk '{print $NF}')" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
     echo >&2 "ERROR: couldn't find path to sparkmagic. OUTPUT: "; \
