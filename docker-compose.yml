@@ -123,6 +123,8 @@ services:
     entrypoint:
       - /bin/bash
       - -c
+    environment:
+      - SPARKMAGIC_CONF_DIR=/app/.dev/conf/sparkmagic/
     command:
       - |
         set -eux
@@ -131,7 +133,6 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-      - ./.dev/conf/sparkmagic/:/home/${USER_NAME:-app}/.sparkmagic/
 
 networks:
   docker.internal:

@@ -1,11 +1,13 @@
-FROM python:3.6
+FROM python:3.9
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y curl unzip netcat tar krb5-config libkrb5-dev dnsutils && \
+    apt-get install -y curl unzip netcat-openbsd tar krb5-config libkrb5-dev dnsutils && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /etc/app
+COPY ./requirements-jupyter.txt ./
+RUN pip3 install --no-cache-dir -r ./requirements-jupyter.txt
 COPY ./requirements-magics.txt ./
 RUN pip3 install --no-cache-dir -r ./requirements-magics.txt
 COPY ./requirements-dev.txt ./

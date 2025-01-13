@@ -1,1 +1,1 @@
-sparkmagic>=0.18
+sparkmagic

@@ -6,4 +6,16 @@
     "autopep8.args": [
         "--max-line-length=120"
     ],
+    "makefile.configureOnOpen": false,
+    "python.testing.pytestArgs": [
+        "."
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "shellcheck.ignorePatterns": {
+        "**/*.envrc": true,
+        "**/*.envrc.example": true,
+        "**/*.env": true,
+        "**/*.env.example": true,
+    }
 }

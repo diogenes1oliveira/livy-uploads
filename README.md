@@ -20,7 +20,7 @@ You can find sample notebooks in [examples/](examples/).
 %load_ext livy_uploads.magics
 ```
 
-### Sending local variable
+### Sending local variables
 
 
 ```python
@@ -121,7 +121,7 @@ now
 
 
 ```bash
-%%remote_command
+%%shell_command
 
 ls -lahF .
 ```
@@ -189,7 +189,7 @@ ls -lahF .
 
 
 ```bash
-%%remote_command
+%%shell_command
 
 ls -lahF | grep magics
 ```
@@ -221,7 +221,7 @@ ls -lahF | grep magics
 
 
 ```bash
-%%remote_command
+%%shell_command
 pwd
 ```
 
@@ -232,7 +232,7 @@ pwd
 
 
 ```bash
-%%remote_command
+%%shell_command
 
 find "$PWD/sample-dir"
 ```

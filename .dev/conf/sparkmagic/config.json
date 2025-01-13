@@ -63,8 +63,7 @@
     "executorCores": 2
   },
   "session_configs_defaults": {
-    "conf": {
-    }
+    "conf": {}
   },
   "use_auto_viz": true,
   "coerce_dataframe": true,
@@ -83,5 +82,8 @@
     3,
     5
   ],
-  "configurable_retry_policy_max_retries": 8
+  "configurable_retry_policy_max_retries": 8,
+  "shutdown_session_on_spark_statement_errors": true,
+  "all_errors_are_fatal": true,
+  "cleanup_all_sessions_on_exit": true
 }

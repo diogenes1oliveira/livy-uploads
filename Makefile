@@ -10,6 +10,10 @@ dev/up:
 	docker compose --progress=plain up --build -d
 	docker compose logs -f
 
+.PHONY: dev/logs
+dev/logs:
+	docker compose logs -f
+
 .PHONY: dev/rm
 dev/rm:
 	docker-compose kill --signal SIGKILL || true

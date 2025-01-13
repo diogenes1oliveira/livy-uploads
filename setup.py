@@ -28,6 +28,7 @@ def read_reqs(path):
 run_requirements = read_reqs("./requirements.txt")
 dev_requirements = read_reqs("./requirements-dev.txt")
 magics_requirements = read_reqs("./requirements-magics.txt")
+jupyter_requirements = read_reqs("./requirements-jupyter.txt")
 
 with io.open("README.md", encoding="utf8") as readme:
     long_description = readme.read()
@@ -50,16 +51,17 @@ setup(
     install_requires=run_requirements,
     extras_require={
         "dev": dev_requirements,
+        "jupyter": jupyter_requirements,
         "unit": dev_requirements,
         "integration": dev_requirements,
         "magics": magics_requirements,
     },
-    python_requires=">=3.6",
+    python_requires=">=3.9",
     classifiers=[
         "Intended Audience :: Information Technology",
         "Natural Language :: English",
         "Operating System :: POSIX :: Linux",
-        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.9",
     ],
     keywords=[],
 )
