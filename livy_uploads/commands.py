@@ -71,7 +71,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
                 value = {code_name}()
 
                 pickled_b64 = b64encode(pickle.dumps(value)).decode('ascii')
-                print('\\npickled_b64', len(pickled_b64), pickled_b64, end='')
+                print('\\nLivyUploads:pickled_b64', len(pickled_b64), pickled_b64, end='\\n')
 
             {run_name}()
             del {run_name}, {code_name}
@@ -120,17 +120,28 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
             raise Exception(f'non-textual output: {output}')
 
         try:
-            prefix, size, data_b64 = lines[-1].strip().split()
-            size = int(size)
-            if size != len(data_b64):
-                raise ValueError(
-                    f'bad output, len does not match (expected {len(data_b64)}, got {size}: {lines}'
-                )
-            if prefix != 'pickled_b64':
-                raise ValueError(f'bad output, unexpected prefix {prefix!r}')
+            final_lines: List[str] = []
+            for line in lines:
+                if not line.startswith('LivyUploads:pickled_b64'):
+                    final_lines.append(line)
+                    continue
 
-            value = pickle.loads(b64decode(data_b64))
-            return lines[:-1], value
+                parts = line.strip().split()
+                try:
+                    prefix, size, data_b64 = parts
+                    size = int(size)
+                except Exception as e:
+                    raise RuntimeError(f'bad status line in {line!r}') from e
+
+                if size != len(data_b64):
+                    raise ValueError(
+                        f'bad output, len does not match (expected {len(data_b64)}, got {size}: {lines}'
+                    )
+                if prefix != 'LivyUploads:pickled_b64':
+                    raise ValueError(f'bad output, unexpected prefix {prefix!r}')
+
+                value = pickle.loads(b64decode(data_b64))
+                return lines[:-1], value
 
         except Exception as e:
             raise Exception(f'bad output, unexpected format: {output}') from e

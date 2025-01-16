@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from logging import getLogger
 import os
@@ -27,6 +28,7 @@ class DaemonProcess:
         cwd: Optional[StrOrPath] = None,
         env: Optional[Dict[str, Optional[str]]] = None,
         pid_glob: Optional[str] = None,
+        start_timeout: float = 5.0,
     ):
         '''
         Parameters:
@@ -38,6 +40,7 @@ class DaemonProcess:
         - cwd: the working directory of the process. Defaults to the current directory.
         - env: overrides for the environment variables. None will unset the variable.
         - pid_glob: a glob pattern to find the PID file. Defaults to '*.pid'
+        - start_timeout: the time to wait for the daemon to start
         '''
         self.start_cmd = start_cmd
         self.stop_cmd = stop_cmd
@@ -46,6 +49,7 @@ class DaemonProcess:
         self.cwd = (Path(cwd) if cwd else Path.cwd()).absolute()
         self.env = env or {}
         self.pid_glob = pid_glob or '*.pid'
+        self.start_timeout = start_timeout
         self._logs_follower = LogsFollower(self.logs_dir)
 
     def start(self) -> Tuple[int, Callable[[Optional[float]], str]]:
@@ -67,17 +71,33 @@ class DaemonProcess:
                 env[k] = v
         self.env = env
 
-        LOGGER.debug('starting process')
-        subprocess.run(
-            args=self.start_cmd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
-            stderr=subprocess.STDOUT,
-            check=True,
-            cwd=self.cwd,
-            universal_newlines=True,
-        )
+        LOGGER.debug('starting process %s', self.start_cmd)
+        log_path = self.logs_dir / 'livy_uploads.log'
+        with log_path.open('wb') as fp:
+            now = datetime.now().astimezone().isoformat(timespec='seconds')
+            fp.write(f'INFO {now}: starting process\n'.encode('ascii'))
+            proc = subprocess.Popen(
+                args=self.start_cmd,
+                env=self.env,
+                stdin=subprocess.DEVNULL,
+                stdout=fp,
+                stderr=subprocess.STDOUT,
+                cwd=self.cwd,
+            )
+
+            try:
+                returncode = proc.wait(timeout=self.start_timeout)
+            except subprocess.TimeoutExpired:
+                LOGGER.warning("process didn't start in time, killing it")
+                proc.kill()
+                returncode = proc.wait(2.0)
+
+        try:
+            if returncode != 0:
+                raise RuntimeError(f'process failed to start: {returncode}')
+        finally:
+            print(log_path.read_text(), file=sys.stderr)
+
         LOGGER.debug('process started up')
 
         self._logs_follower.start()
@@ -107,14 +127,33 @@ class DaemonProcess:
     def stop(self, timeout: float):
         try:
             if self.stop_cmd:
-                subprocess.run(
-                    args=self.stop_cmd,
-                    env=self.env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=sys.stderr,
-                    stderr=subprocess.STDOUT,
-                    check=True,
-                )
+                LOGGER.debug('stopping process %s', self.stop_cmd)
+                log_path = self.logs_dir / 'livy_uploads.log'
+                with log_path.open('wb') as fp:
+                    now = datetime.now().astimezone().isoformat(timespec='seconds')
+                    fp.write(f'INFO {now}: stopping process\n'.encode('ascii'))
+                    proc = subprocess.Popen(
+                        args=self.stop_cmd,
+                        env=self.env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=fp,
+                        stderr=subprocess.STDOUT,
+                        cwd=self.cwd,
+                    )
+
+                    try:
+                        returncode = proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        LOGGER.warning("process didn't stop in time, killing the stop CMD")
+                        proc.kill()
+                        returncode = proc.wait(2.0)
+
+                try:
+                    if returncode != 0:
+                        raise RuntimeError(f'process failed to stop: returncode={returncode}')
+                finally:
+                    print(log_path.read_text(), file=sys.stderr)
+
             else:
                 try:
                     pid = self.get_pid()

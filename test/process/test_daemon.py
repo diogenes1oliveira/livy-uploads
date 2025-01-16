@@ -35,16 +35,17 @@ class TestLogsFollower:
 class TestDaemonProcess:
     def test_daemon(self, tmp_path: Path):
         shell = '''
+            exec 0<&-
             nohup bash -c '
                 echo line0
                 sleep 2
 
                 STOP=
-                trap 'STOP=1' SIGTERM
+                trap "STOP=1" SIGTERM
                 while [ -z "$STOP" ]; do
                     sleep 0.1
                 done
-                echo 'stopping'
+                echo "stopping"
                 sleep 3
             ' 2>&1 > logs/daemon.log &
             printf '%s' "$!" > run/daemon.pid
@@ -59,6 +60,9 @@ class TestDaemonProcess:
         assert pid > 0
         time.sleep(1.0)
         assert process.poll() is None
+        first_line = readline(1.0)
+        assert first_line.startswith('INFO')
+        assert 'starting process' in first_line
         assert readline(1.0) == 'line0'
 
         time.sleep(2.0)

@@ -21,8 +21,6 @@ class LivyUploadsHadoopProcessLocal:
         cls,
         archive_url: str,
         archive_home: StrOrPath,
-        start_cmd: List[str],
-        stop_cmd: List[str],
         init_py: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         '''
@@ -80,8 +78,6 @@ class LivyUploadsHadoopProcessLocal:
             'LOG_DIR': str(log_dir),
             'RUN_DIR': str(run_dir),
             'CONF_DIR': str(conf_dir),
-            'START_CMD': ' '.join(map(shlex.quote, start_cmd)),
-            'STOP_CMD': ' '.join(map(shlex.quote, stop_cmd)),
             'REMOTE_HOSTNAME': socket.getfqdn(),
         }
 
@@ -113,8 +109,6 @@ class HadoopProcess:
         archive_url: str,
         confdir: StrOrPath,
         archive_home: StrOrPath,
-        start_cmd: List[str],
-        stop_cmd: List[str],
         init_py: Optional[str] = None,
         random_ports_envs: Optional[List[str]] = None,
     ):
@@ -131,8 +125,6 @@ class HadoopProcess:
         self.archive_url = archive_url
         self.confdir = Path(confdir).absolute()
         self.archive_home = Path(archive_home)
-        self.start_cmd = start_cmd
-        self.stop_cmd = stop_cmd
         self.init_py = init_py
         self.random_ports_envs = random_ports_envs or []
 
@@ -160,16 +152,12 @@ class HadoopProcess:
             vars=dict(
                 archive_url=self.archive_url,
                 archive_home=self.archive_home,
-                start_cmd=self.start_cmd,
-                stop_cmd=self.stop_cmd,
                 init_py=self.init_py,
             ),
             code='''
                 return LivyUploadsHadoopProcessLocal.install_local(
                     archive_url=archive_url,
                     archive_home=archive_home,
-                    start_cmd=start_cmd,
-                    stop_cmd=stop_cmd,
                     init_py=init_py,
                 )
             ''',
@@ -177,22 +165,17 @@ class HadoopProcess:
         _, env = session.run(cmd)
         return env
 
-    def start(self, manager, env: Dict[str, Optional[str]]) -> int:
+    def configure(self, session, env: Dict[str, Optional[str]]):
         '''
-        Starts the hadoop process remotely.
-
-        Returns:
-        - the PID of the remote process
+        Templates and sends the config files
         '''
+        from livy_uploads.session import LivySessionEndpoint
         from livy_uploads.commands import LivyRunCode, LivyUploadDir
-        from livy_uploads.process.manager import ProcessManager
-        from livy_uploads.process.daemon import DaemonProcess
-        from livy_uploads.process import daemon
 
-        manager: ProcessManager = manager
+        session: LivySessionEndpoint = session
 
         LOGGER.info('getting random ports')
-        _, ports_env = manager.session.run(LivyRunCode(
+        _, ports_env = session.run(LivyRunCode(
             vars=dict(random_ports_envs=self.random_ports_envs),
             code='''
                 return LivyUploadsHadoopProcessLocal.get_free_ports(random_ports_envs)
@@ -213,16 +196,30 @@ class HadoopProcess:
             dst.write_text(content)
 
         LOGGER.info('uploading the config files')
-        manager.session.run(LivyUploadDir(
+        session.run(LivyUploadDir(
             source_path=str(self.confdir),
             dest_path=env['CONF_DIR'],
         ))
 
+
+    def start(self, manager, env: Dict[str, Optional[str]], start_cmd: List[str], stop_cmd: Optional[List[str]] = None) -> int:
+        '''
+        Starts the hadoop process remotely.
+
+        Returns:
+        - the PID of the remote process
+        '''
+        from livy_uploads.process.manager import ProcessManager
+        from livy_uploads.process.daemon import DaemonProcess
+        from livy_uploads.process import daemon
+
+        manager: ProcessManager = manager
+
         process_class = manager.register(daemon.__name__ + ':' + DaemonProcess.__name__)
 
         kwargs = dict(
-            start_cmd=shlex.split(env['START_CMD']),
-            stop_cmd=shlex.split(env['STOP_CMD']),
+            start_cmd=start_cmd,
+            stop_cmd=stop_cmd,
             pid_dir=env['RUN_DIR'],
             logs_dir=env['LOG_DIR'],
             cwd=env['ARCHIVE_HOME'],

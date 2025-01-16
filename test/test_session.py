@@ -87,10 +87,10 @@ class TestLivySessionEndpoint:
         session = LivySessionEndpoint.create_session(
             self.endpoint,
             name=f'test-{uuid4()}',
-            ttl='30s',
-            heartbeatTimeoutInSecond=30,
+            ttl='60s',
+            heartbeatTimeoutInSecond=60,
         )
-        session.wait_ready(LinearRetryPolicy(30, 1.0))
+        session.wait_ready(LinearRetryPolicy(60, 1.0))
 
         logs_iter = session.follow()
         creation_logs = []
