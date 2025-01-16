@@ -1,20 +1,21 @@
 from abc import ABC, abstractmethod
 import io
 import queue
+import sys
 import threading
 import traceback
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 
 class BaseProcess(ABC):
     @abstractmethod
-    def start(self) -> Tuple[int, io.StringIO]:
+    def start(self) -> Tuple[int, Callable[[], str]]:
         '''
         Arranges for the process to be started.
 
         Returns:
         - the PID of the process
-        - the log stream
+        - a function to read a line from the process's output stream
         '''
 
     @abstractmethod
@@ -60,12 +61,12 @@ class RemoteProcessManager:
         - the new process PID
         '''
         process = self.registry[class_name](*args, **kwargs)
-        pid, stream = process.start()
+        pid, readline = process.start()
         self.instances[pid] = process
         self.stop_flags[pid] = threading.Event()
         self.log_queues[pid] = queue.Queue(maxsize=500)
 
-        thread = threading.Thread(target=self._print_stream, args=(pid, stream), daemon=True)
+        thread = threading.Thread(target=self._print_stream, args=(pid, readline), daemon=True)
         thread.start()
 
         return pid
@@ -111,7 +112,7 @@ class RemoteProcessManager:
         process = self.instances[pid]
         process.stop(timeout=timeout)
 
-    def _print_stream(self, pid: int, stream: io.StringIO):
+    def _print_stream(self, pid: int, readline: Callable[[], str]):
         '''
         Prints the log stream of a process.
         '''
@@ -120,11 +121,16 @@ class RemoteProcessManager:
             log_queue = self.log_queues[pid]
 
             while not stop_flag.is_set():
-                line = stream.readline()
+                line = readline()
                 if not line:
                     break
                 line = line.rstrip('\r\n')
                 log_queue.put(line)
         except Exception:
             text = traceback.format_exc()
-            self.println(text)
+            try:
+                sc: Any
+                println = sc._gateway.jvm.java.lang.System.err.println
+                println(text)
+            except Exception:
+                print(text, file=sys.__stderr__)

@@ -1,7 +1,7 @@
 import io
 import os
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 class PopenProcess:
@@ -15,7 +15,7 @@ class PopenProcess:
         self.cwd = cwd or None
         self.proc = None
 
-    def start(self) -> Tuple[int, io.StringIO]:
+    def start(self) -> Tuple[int, Callable[[], str]]:
         self.proc = subprocess.Popen(
             self.args,
             stdin=subprocess.DEVNULL,
@@ -25,7 +25,7 @@ class PopenProcess:
             universal_newlines=True,
             cwd=self.cwd,
         )
-        return self.proc.pid, self.proc.stdout
+        return self.proc.pid, self.proc.stdout.readline
 
     def poll(self) -> Optional[int]:
         try:

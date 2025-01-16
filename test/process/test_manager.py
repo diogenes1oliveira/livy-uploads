@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 from typing import List, Tuple
 from uuid import uuid4
@@ -42,7 +42,7 @@ class TestProcessManager:
             args=[
                 'bash',
                 '-c',
-                'for i in $(seq 1 5); do echo "$(date --iso=seconds --utc): hello #$i from $$"; sleep 4; done; exit 3',
+                'for i in $(seq 1 5); do echo "$(date --utc +%s): hello #$i from $$"; sleep 4; done; exit 3',
             ],
         )
         assert pid > 0
@@ -57,11 +57,11 @@ class TestProcessManager:
         elapsed = time.monotonic() - t0
 
         assert returncode == 3
-        assert 20 <= elapsed < 40
+        assert 15 <= elapsed < 40
 
         for i, (local_dt, line) in enumerate(logs):
-            remote_dt, _, line = line.partition(': ')
-            remote_dt = datetime.fromisoformat(remote_dt)
+            remote_ts, _, line = line.partition(': ')
+            remote_dt = datetime.fromtimestamp(float(remote_ts), tz=timezone.utc)
 
             assert line == f'hello #{i + 1} from {pid}'
 

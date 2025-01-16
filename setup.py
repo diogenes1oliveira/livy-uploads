@@ -56,12 +56,12 @@ setup(
         "integration": dev_requirements,
         "magics": magics_requirements,
     },
-    python_requires=">=3.9",
+    python_requires=">=3.6",
     classifiers=[
         "Intended Audience :: Information Technology",
         "Natural Language :: English",
         "Operating System :: POSIX :: Linux",
-        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.6",
     ],
     keywords=[],
 )
