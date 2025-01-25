@@ -1,14 +1,14 @@
 from contextlib import ExitStack
+import concurrent.futures
 from logging import getLogger
 from pathlib import Path
-import shlex
 import shutil
 import socket
 import stat
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 from tempfile import TemporaryDirectory
-
+from typing import Callable
 
 StrOrPath = Union[str, Path]
 
@@ -102,6 +102,49 @@ class LivyUploadsHadoopProcessLocal:
 
         return result
 
+    @classmethod
+    def get_free_ports_range(cls, names: List[str], start: int, stop: int, timeout: float=5.0) -> Dict[str, str]:
+        '''
+        Get free TCP ports for the given names within the range.
+        '''
+        result: Dict[str, str] = {}
+        ports: List[int] = []
+        cleanups: List[Callable[[], None]] = [] # not sure if ExitStack is thread-safe...
+
+        def check_port(port: int):
+            if len(ports) >= len(names):
+                return
+            sock = socket.socket()
+            try:
+                sock.bind(('localhost', port))
+            except OSError:
+                return
+            else:
+                ports.append(port)
+                cleanups.append(sock.close)
+
+        with concurrent.futures.ThreadPoolExecutor(min(len(names), 15)) as executor:
+            futures = []
+
+            for port in range(start, stop+1):
+                f = executor.submit(check_port, port)
+                futures.append(f)
+
+            concurrent.futures.wait(futures, timeout=timeout, return_when=concurrent.futures.FIRST_EXCEPTION)
+
+            futures = [executor.submit(c) for c in cleanups]
+            concurrent.futures.wait(futures, timeout=timeout, return_when=concurrent.futures.FIRST_EXCEPTION)
+
+            del cleanups
+
+        if len(ports) < len(names):
+            raise ValueError(f'could not find enough free ports: {ports}')
+
+        for name, port in zip(names, ports):
+            result[name] = str(port)
+
+        return result
+
 
 class HadoopProcess:
     def __init__(
@@ -110,7 +153,6 @@ class HadoopProcess:
         confdir: StrOrPath,
         archive_home: StrOrPath,
         init_py: Optional[str] = None,
-        random_ports_envs: Optional[List[str]] = None,
     ):
         '''
         Parameters:
@@ -119,14 +161,11 @@ class HadoopProcess:
         - archive_home: a relative path where the archive is to be extracted
         - init_py: Python code to adjust the environment before running the script.
             It should change the environment dictionary env: in place.
-        - random_ports_envs: a list of environment variables that will be set to
-        random free TCP ports before the startup
         '''
         self.archive_url = archive_url
         self.confdir = Path(confdir).absolute()
         self.archive_home = Path(archive_home)
         self.init_py = init_py
-        self.random_ports_envs = random_ports_envs or []
 
     def install(self, session) -> Dict[str, Optional[str]]:
         '''
@@ -138,13 +177,13 @@ class HadoopProcess:
         if not self.confdir.exists():
             raise ValueError(f'configuration directory does not exist: {self.confdir}')
 
-        from livy_uploads.session import LivySessionEndpoint
+        from livy_uploads.session import LivySession
         from livy_uploads.commands import LivyRunCode
-        session: LivySessionEndpoint = session
+        session: LivySession = session
 
         LOGGER.info('sending the Hadoop initialization code')
         code = Path(__file__).read_text()
-        code += f'\nglobals()["{LivyUploadsHadoopProcessLocal.__name__}"] = {LivyUploadsHadoopProcessLocal.__name__}\n'
+        code += f'\nglobals()["LivyUploadsHadoopProcessLocal"] = LivyUploadsHadoopProcessLocal\n'
         LivyRunCode(code).run(session)
 
         LOGGER.info('installing the Hadoop archive')
@@ -162,27 +201,44 @@ class HadoopProcess:
                 )
             ''',
         )
-        _, env = session.run(cmd)
+        _, env = session.apply(cmd)
         return env
+
+    def get_free_ports(self, session, names: List[str], range: Optional[Tuple[int, int]] = None, timeout: float = 5.0) -> Dict[str, str]:
+        '''
+        Get free TCP ports for the given names.
+        '''
+        from livy_uploads.session import LivySession
+        from livy_uploads.commands import LivyRunCode
+        session: LivySession = session
+
+        LOGGER.info('getting free ports')
+        if range:
+            cmd = LivyRunCode(
+                vars=dict(names=names, start=range[0], stop=range[1], timeout=timeout),
+                code='''
+                    return LivyUploadsHadoopProcessLocal.get_free_ports_range(names, start, stop, timeout)
+                ''',
+            )
+        else:
+            cmd = LivyRunCode(
+                vars=dict(names=names),
+                code='''
+                    return LivyUploadsHadoopProcessLocal.get_free_ports(names)
+                ''',
+            )
+
+        _, ports = session.apply(cmd)
+        return ports
 
     def configure(self, session, env: Dict[str, Optional[str]]):
         '''
         Templates and sends the config files
         '''
-        from livy_uploads.session import LivySessionEndpoint
-        from livy_uploads.commands import LivyRunCode, LivyUploadDir
+        from livy_uploads.session import LivySession
+        from livy_uploads.commands import LivyUploadDir
 
-        session: LivySessionEndpoint = session
-
-        LOGGER.info('getting random ports')
-        _, ports_env = session.run(LivyRunCode(
-            vars=dict(random_ports_envs=self.random_ports_envs),
-            code='''
-                return LivyUploadsHadoopProcessLocal.get_free_ports(random_ports_envs)
-            ''',
-        ))
-        LOGGER.info('got remote ports: %s', ports_env)
-        env.update(ports_env)
+        session: LivySession = session
 
         LOGGER.info('templating the config files')
         for conf in self.confdir.glob('*'):
@@ -196,7 +252,7 @@ class HadoopProcess:
             dst.write_text(content)
 
         LOGGER.info('uploading the config files')
-        session.run(LivyUploadDir(
+        session.apply(LivyUploadDir(
             source_path=str(self.confdir),
             dest_path=env['CONF_DIR'],
         ))

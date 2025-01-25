@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from livy_uploads.exceptions import LivyRequestError
-from livy_uploads.session import LivyEndpoint, LivySessionEndpoint
+from livy_uploads.session import LivyEndpoint, LivySession
 from livy_uploads.retry_policy import LinearRetryPolicy
 
 
@@ -22,12 +22,12 @@ class TestLivySessionEndpoint:
     endpoint = LivyEndpoint('http://localhost:8998')
 
     def test_lifecycle(self):
-        sessions_before = {s.session_id: s for s in LivySessionEndpoint.list(self.endpoint)}
+        sessions_before = {s.session_id: s for s in LivySession.list(self.endpoint)}
 
         name = 'test-' + str(uuid4())
-        session = LivySessionEndpoint.create_session(self.endpoint, name=name, ttl='60s', heartbeatTimeoutInSecond=60)
+        session = LivySession.create(self.endpoint, name=name, ttl='60s', heartbeatTimeoutInSecond=60)
 
-        sessions_now = {s.session_id: s for s in LivySessionEndpoint.list(self.endpoint)}
+        sessions_now = {s.session_id: s for s in LivySession.list(self.endpoint)}
         new_session_ids = list(set(sessions_now) - set(sessions_before))
         assert len(new_session_ids) == 1
         new_session = sessions_now[new_session_ids[0]]
@@ -39,16 +39,16 @@ class TestLivySessionEndpoint:
         session.wait_ready(LinearRetryPolicy(30, 1.0))
 
         with pytest.raises(LivyRequestError) as e:
-            LivySessionEndpoint.create_session(self.endpoint, name=name)
+            LivySession.create(self.endpoint, name=name)
 
         assert 'duplicate' in str(e).lower()
 
-        session.close()
-        session.wait_closed(LinearRetryPolicy(10, 1.0))
+        session.delete()
+        session.wait_done(LinearRetryPolicy(10, 1.0))
         assert session.refresh_state() == 'dead'
 
     def test_ttl(self):
-        session = LivySessionEndpoint.create_session(
+        session = LivySession.create(
             self.endpoint,
             name=f'test-{uuid4()}',
             ttl='10s',
@@ -84,7 +84,7 @@ class TestLivySessionEndpoint:
         assert session.refresh_state() == 'dead'
 
     def test_follow(self):
-        session = LivySessionEndpoint.create_session(
+        session = LivySession.create(
             self.endpoint,
             name=f'test-{uuid4()}',
             ttl='60s',

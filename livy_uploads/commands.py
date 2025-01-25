@@ -7,11 +7,11 @@ import shutil
 import textwrap
 from tempfile import TemporaryDirectory
 import time
-from typing import Any, Callable, Dict, List, Optional, TypeVar, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar, Tuple
 from uuid import uuid4
 
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.session import LivySessionEndpoint, LivyCommand
+from livy_uploads.session import LivySession, LivyCommand
 
 
 LOGGER = getLogger(__name__)
@@ -39,7 +39,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
         self.vars = vars or {}
         self.pause = pause
 
-    def run(self, session: 'LivySessionEndpoint') -> Tuple[List[str], Any]:
+    def run(self, session: 'LivySession') -> Tuple[List[str], Any]:
         '''
         Returns:
         - a tuple of the output lines and the return value of the code
@@ -79,7 +79,8 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
 
         compile(code, 'source', mode='exec')  # no syntax errors
 
-        r = session.post(
+        r = session.request(
+            'POST',
             f"/sessions/{session.session_id}/statements",
             json={
                 'kind': 'pyspark',
@@ -92,7 +93,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
         headers = session.build_headers({'accept': 'application/json'})
 
         while True:
-            r = session.get(st_path, headers=headers)
+            r = session.request('GET', st_path, headers=headers)
             st = r.json()
             if st['state'] in ('waiting', 'running'):
                 time.sleep(self.pause)
@@ -104,16 +105,11 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
 
         output = st['output']
         if output['status'] != 'ok':
-            exc = LivyStatementError(
+            raise LivyStatementError(
                 output['ename'],
                 output['evalue'],
                 output['traceback'],
             )
-            exc_builtin = exc.as_builtin()
-            if exc_builtin:
-                raise exc_builtin from exc
-            else:
-                raise exc
         try:
             lines: List[str] = output['data']['text/plain'].strip().splitlines()
         except KeyError:
@@ -163,14 +159,15 @@ class LivyUploadBlob(LivyCommand):
         self.source = source
         self.name = name
 
-    def run(self, session: 'LivySessionEndpoint'):
+    def run(self, session: 'LivySession'):
         '''
         Executes the upload
         '''
         headers = session.build_headers({'accept': 'application/json'})
         headers.pop('content-type', None)
 
-        session.post(
+        session.request(
+            'POST',
             f'/sessions/{session.session_id}/upload-file',
             headers=headers,
             files={'file': (self.name, self.source)},
@@ -197,7 +194,7 @@ class LivyUploadFile(LivyCommand[str]):
         self.mode = mode
         self.progress_func = progress_func or (lambda _: None)
 
-    def run(self, session: 'LivySessionEndpoint') -> str:
+    def run(self, session: 'LivySession') -> str:
         '''
         Executes the uploading of the file to the remote Spark session.
 
@@ -272,7 +269,7 @@ class LivyUploadDir(LivyCommand[str]):
         self.mode = mode or 0o700
         self.progress_func = progress_func or (lambda _: None)
 
-    def run(self, session: 'LivySessionEndpoint') -> str:
+    def run(self, session: 'LivySession') -> str:
         '''
         Executes the uploading of the directory to the remote Spark session.
 
@@ -343,7 +340,7 @@ class LivyRunShell(LivyCommand[Tuple[str, int]]):
         self.run_timeout = run_timeout
         self.stop_timeout = stop_timeout
 
-    def run(self, session: 'LivySessionEndpoint') -> Tuple[str, int]:
+    def run(self, session: 'LivySession') -> Tuple[str, int]:
         '''
         Executes the command and returns the output and the return code.
         '''

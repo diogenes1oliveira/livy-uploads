@@ -3,7 +3,7 @@ import itertools
 from logging import getLogger, Logger
 from threading import Lock
 import time
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Set, TypeVar
+from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
 import requests
 
@@ -16,7 +16,7 @@ LOGGER = getLogger(__name__)
 T = TypeVar('T')
 
 
-class LivySessionEndpoint(LivyEndpoint):
+class LivySession(LivyEndpoint):
     '''
     A class to query and interact with a specific Livy session.
     '''
@@ -59,16 +59,20 @@ class LivySessionEndpoint(LivyEndpoint):
         self.logger = logger or getLogger(f'session#{session_id}')
 
     def __repr__(self):
-        session_info = {}
-        if self.session_info.get('name'):
-            session_info['name'] = self.session_info['name']
-        if self.session_info.get('state'):
-            session_info['state'] = self.session_info['state']
-
-        return f"{self.__class__.__name__}({self.url!r}, session_id={self.session_id}, session_info={(session_info or None)!r})"
+        app_info = self.session_info.get('appInfo') or {}
+        infos = ', '.join([
+            f'url={self.url}',
+            f'id={self.session_id}',
+            f'name={self.session_name}',
+            f'state={self.session_state}',
+            f'app_id={self.session_info.get("appId") or None}',
+            f'ui_url={app_info.get("sparkUiUrl")}',
+            f'driver_url={app_info.get("driverLogUrl")}',
+        ])
+        return f'{self.__class__.__name__}({infos})'
 
     @classmethod
-    def list(self, endpoint: LivyEndpoint, page_size: int = 20) -> Iterator['LivySessionEndpoint']:
+    def list(self, endpoint: LivyEndpoint, page_size: int = 20) -> Iterator['LivySession']:
         '''
         Retrieves a list of all active session endpoints
         '''
@@ -76,13 +80,13 @@ class LivySessionEndpoint(LivyEndpoint):
 
         while True:
             LOGGER.info('fetching sessions from offset %d', offset)
-            r = endpoint.get(f'/sessions?from={offset}&size={page_size}')
-            body = r.json()
+            r = endpoint.request('GET', f'/sessions?from={offset}&size={page_size}')
+            body = dict(r.json())
             sessions = body.get('sessions') or []
             offset += len(sessions)
 
             for session in sessions:
-                yield LivySessionEndpoint(
+                yield LivySession(
                     url=endpoint.url,
                     session_id=session['id'],
                     session_info=session,
@@ -95,7 +99,7 @@ class LivySessionEndpoint(LivyEndpoint):
                 break
 
     @classmethod
-    def create_session(cls, endpoint: 'LivyEndpoint', name: str, doAs: Optional[str] = None, **kwargs) -> 'LivySessionEndpoint':
+    def create(cls, endpoint: 'LivyEndpoint', name: str, doAs: Optional[str] = None, **kwargs) -> 'LivySession':
         '''
         Creates a new session in the Livy server
 
@@ -111,13 +115,14 @@ class LivySessionEndpoint(LivyEndpoint):
             path += f'?doAs={doAs}'
 
         LOGGER.info('creating new session named %r', name)
-        r = endpoint.post(
+        r = endpoint.request(
+            'POST',
             path='/sessions',
             json={**kwargs, 'name': name},
         )
         body = r.json()
 
-        session = LivySessionEndpoint(
+        session = LivySession(
             url=endpoint.url,
             session_id=body['id'],
             default_headers=endpoint.default_headers,
@@ -174,17 +179,17 @@ class LivySessionEndpoint(LivyEndpoint):
 
         retry_policy.run(run)
 
-    def close(self):
+    def delete(self):
         '''
         Sends the deletion request for the session
         '''
         self.logger.info('stopping session')
-        self.delete(f'/sessions/{self.session_id}')
+        self.request('DELETE', f'/sessions/{self.session_id}')
         self.logger.info('session deleted')
 
-    def wait_closed(self, retry_policy: RetryPolicy):
+    def wait_done(self, retry_policy: RetryPolicy):
         '''
-        Waits until the session is deleted
+        Waits until the session is finished
         '''
         retry_policy = WithExceptionsPolicy(retry_policy, LivyRetriableError)
 
@@ -206,8 +211,8 @@ class LivySessionEndpoint(LivyEndpoint):
         '''
         Refreshes all the information for the session
         '''
-        r = self.get(f'/sessions/{self.session_id}')
-        body = r.json()
+        r = self.request('GET', f'/sessions/{self.session_id}')
+        body = dict(r.json())
         body.pop('log', None)
         self.session_info = body
         return self.session_info
@@ -218,8 +223,8 @@ class LivySessionEndpoint(LivyEndpoint):
         '''
 
         try:
-            r = self.get(f'/sessions/{self.session_id}/state')
-            body = r.json()
+            r = self.request('GET', f'/sessions/{self.session_id}/state')
+            body = dict(r.json())
             state = body['state']
         except LivyRequestError as e:
             if e.response.status_code == 404:
@@ -244,24 +249,21 @@ class LivySessionEndpoint(LivyEndpoint):
         - the batch of log lines. If it returns one with zero lines, you probably should add a bigger pause
         before the next iteration to avoid hitting the server too hard.
         '''
-        self.refresh_state()
-        current_state = self.session_state
-
         previous_logs_set: Set[str] = set()
 
         while True:
-            self.refresh_state()
-            new_state = self.session_state
-            stopped = new_state in ('error', 'dead', 'killed', 'success')
+            state = self.refresh_state()
+            if state in ('error', 'dead', 'killed', 'success'):
+                LOGGER.info('session is in state %r, stopping log retrieval', state)
+                break
 
             try:
-                r = self.get(f'/sessions/{self.session_id}/log?size={page_size}')
-                body = r.json()
+                r = self.request('GET', f'/sessions/{self.session_id}/log?size={page_size}')
+                body = dict(r.json())
             except LivyRequestError as e:
                 if e.response.status_code == 404:
-                    new_state = 'dead'
-                    stopped = True
-                    logs = []
+                    LOGGER.info('session %d is not found, stopping log retrieval', self.session_id)
+                    break
                 else:
                     raise
 
@@ -270,14 +272,9 @@ class LivySessionEndpoint(LivyEndpoint):
             logs: List[str] = list(itertools.dropwhile(lambda l: l in previous_logs_set, current_logs))
             previous_logs_set = current_logs_set
 
-            if logs or not stopped:
-                yield logs
+            yield logs
 
-            if not logs and stopped:
-                LOGGER.info('session %d is in state %r, stopping log retrieval', self.session_id, current_state)
-                break
-
-    def run(self, command: 'LivyCommand[T]') -> T:
+    def apply(self, command: 'LivyCommand[T]') -> T:
         '''
         Runs a command in the remote Livy session.
         '''
@@ -291,7 +288,7 @@ class LivyCommand(ABC, Generic[T]):
     Base class for Livy commands.
     '''
     @abstractmethod
-    def run(self, session: LivySessionEndpoint) -> T:
+    def run(self, session: LivySession) -> T:
         '''
         Runs the command in the specified Livy session.
         '''

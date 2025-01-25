@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.session import LivyEndpoint, LivySessionEndpoint
+from livy_uploads.session import LivyEndpoint, LivySession
 from livy_uploads.retry_policy import LinearRetryPolicy
 from livy_uploads.commands import (
     LivyRunCode,
@@ -23,11 +23,11 @@ from livy_uploads.commands import (
 
 class TestCommands:
     endpoint = LivyEndpoint('http://localhost:8998')
-    session: LivySessionEndpoint
+    session: LivySession
 
     @classmethod
     def setup_class(cls):
-        cls.session = LivySessionEndpoint.create_session(
+        cls.session = LivySession.create(
             cls.endpoint,
             name='test-' + str(uuid4()),
             ttl='60s',

@@ -11,7 +11,7 @@ from livy_uploads.process import popen
 
 from livy_uploads.process.manager import ProcessManager
 from livy_uploads.exceptions import LivyError
-from livy_uploads.session import LivyEndpoint, LivySessionEndpoint
+from livy_uploads.session import LivyEndpoint, LivySession
 from livy_uploads.retry_policy import LinearRetryPolicy
 
 
@@ -21,10 +21,10 @@ process_spec = popen.__name__ + ':' + process_class
 
 class TestProcessManager:
     endpoint = LivyEndpoint('http://localhost:8998')
-    session: LivySessionEndpoint
+    session: LivySession
 
     def setup_method(self, m):
-        self.session = LivySessionEndpoint.create_session(
+        self.session = LivySession.create(
             self.__class__.endpoint,
             name='test-' + m.__name__ + '-' + str(uuid4()),
             ttl='60s',
@@ -73,8 +73,8 @@ class TestProcessManager:
         manager.initialize()
         manager.register(process_spec)
 
-        self.session.close()
-        self.session.wait_closed(LinearRetryPolicy(30, 1.0))
+        self.session.delete()
+        self.session.wait_done(LinearRetryPolicy(30, 1.0))
 
         # shouldn't raise an error, it's already registered in the local cache
         assert manager.register(process_spec) == process_class

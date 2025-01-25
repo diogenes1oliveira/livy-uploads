@@ -1,10 +1,15 @@
 from functools import wraps
+import json
 from pathlib import Path
+import re
+import time
 import traceback
 from typing import Iterator, List, Optional
 
 from IPython.core.getipython import get_ipython
+from IPython.core.interactiveshell import InteractiveShell
 from sparkmagic.livyclientlib.sparkcontroller import SparkController
+from sparkmagic.livyclientlib.livyreliablehttpclient import LivyReliableHttpClient
 from IPython.core.magic import magics_class, Magics
 from IPython.core.magic import needs_local_scope, line_magic, cell_magic
 from IPython.core.magic_arguments import argument, magic_arguments
@@ -19,7 +24,8 @@ from sparkmagic.livyclientlib.exceptions import (
 )
 from hdijupyterutils.ipythondisplay import IpythonDisplay
 
-from livy_uploads.session import LivySessionEndpoint
+from livy_uploads.session import LivySession
+from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.commands import (
     LivyRunCode,
     LivyRunShell,
@@ -61,7 +67,7 @@ class LivyUploaderMagics(Magics):
         "--session-name",
         type=str,
         default=None,
-        help="Name of the Livy session to use. If not provided, uses the default one",
+        help="Name of the Livy client to use. If not provided, uses the default one",
     )
     @line_magic
     @needs_local_scope
@@ -90,7 +96,7 @@ class LivyUploaderMagics(Magics):
                 globals()[varname] = value
             '''
         )
-        session.run(cmd)
+        session.apply(cmd)
 
     @magic_arguments()
     @argument(
@@ -105,7 +111,7 @@ class LivyUploaderMagics(Magics):
         "--session-name",
         type=str,
         default=None,
-        help="Name of the Livy session to use. If not provided, uses the default one",
+        help="Name of the Livy client to use. If not provided, uses the default one",
     )
     @line_magic
     @needs_local_scope
@@ -130,7 +136,7 @@ class LivyUploaderMagics(Magics):
                 return globals()[varname]
             '''
         )
-        _, result = session.run(cmd)
+        _, result = session.apply(cmd)
         local_ns[args.varname] = result
 
     @magic_arguments()
@@ -167,7 +173,7 @@ class LivyUploaderMagics(Magics):
         "--session-name",
         type=str,
         default=None,
-        help="Name of the Livy session to use. If not provided, uses the default one",
+        help="Name of the Livy client to use. If not provided, uses the default one",
     )
     @line_magic
     @needs_local_scope
@@ -208,7 +214,7 @@ class LivyUploaderMagics(Magics):
                 mode=args.mode or 0o600,
             )
 
-        _, final_path = session.run(cmd)
+        _, final_path = session.apply(cmd)
         self.ipython_display.write(f"Uploaded {source} to {final_path}")
 
     @magic_arguments()
@@ -217,7 +223,7 @@ class LivyUploaderMagics(Magics):
         "--session-name",
         type=str,
         default=None,
-        help="Name of the Livy session to use. If not provided, uses the default one",
+        help="Name of the Livy client to use. If not provided, uses the default one",
     )
     @argument(
         "-t",
@@ -244,7 +250,7 @@ class LivyUploaderMagics(Magics):
             command=command,
             run_timeout=args.timeout,
         )
-        output, returncode = session.run(cmd)
+        output, returncode = session.apply(cmd)
         for l in output.splitlines():
             print(l)
         self.ipython_display.write(f"$ command exited with code {returncode}")
@@ -260,7 +266,7 @@ class LivyUploaderMagics(Magics):
         "--session-name",
         type=str,
         default=None,
-        help="Name of the Livy session to use. If not provided, uses the default one",
+        help="Name of the Livy client to use. If not provided, uses the default one",
     )
     @argument(
         "-p",
@@ -309,7 +315,6 @@ class LivyUploaderMagics(Magics):
         for line in lines:
             print(line)
 
-
 def load_ipython_extension(ipython):
     """
     Any module file that define a function named `load_ipython_extension`
@@ -321,7 +326,7 @@ def load_ipython_extension(ipython):
     ipython.register_magics(LivyUploaderMagics)
 
 
-def get_session(session_name: Optional[str] = None) -> 'LivySessionEndpoint':
+def get_session(session_name: Optional[str] = None) -> 'LivySession':
     '''
     Creates a session endpoint instance from the current IPython shell
     '''
@@ -345,7 +350,7 @@ def get_session(session_name: Optional[str] = None) -> 'LivySessionEndpoint':
     livy_session = spark_controller.get_session_by_name_or_default(session_name)
     livy_client = livy_session.http_client._http_client
 
-    return LivySessionEndpoint(
+    return LivySession(
         url=livy_client._endpoint.url,
         session_id=livy_session.id,
         default_headers=livy_client._headers,

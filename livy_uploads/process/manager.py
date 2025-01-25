@@ -1,16 +1,22 @@
-import importlib
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
-from livy_uploads.session import LivySessionEndpoint
+from livy_uploads.session import LivySession
 from livy_uploads.process import manager_remote
 from livy_uploads.commands import LivyRunCode
 
+from livy_uploads.process import daemon, popen
+
+
+DEFAULT_REGISTRY = [
+    daemon.DaemonProcess,
+    popen.PopenProcess,
+]
 
 class ProcessManager:
     INSTANCE = 'livy_uploads_RemoteProcessManager_instance'
 
-    def __init__(self, session: LivySessionEndpoint):
+    def __init__(self, session: LivySession):
         self.session = session
         self._initialized = False
         self._registry: Dict[str, str] = {}
@@ -31,7 +37,7 @@ class ProcessManager:
                 return var_name in globals()
             ''',
         )
-        _, initialized = self.session.run(test_cmd)
+        _, initialized = self.session.apply(test_cmd)
         if initialized and not force:
             self._initialized = True
             return
@@ -41,10 +47,14 @@ class ProcessManager:
 
         code += f'\nglobals()[{self.INSTANCE!r}] = RemoteProcessManager()\n'
         install_cmd = LivyRunCode(code)
-        self.session.run(install_cmd)
+        self.session.apply(install_cmd)
+
+        for cls in DEFAULT_REGISTRY:
+            self._register(cls)
+
         self._initialized = True
 
-    def register(self, module_spec: str, force: bool = False) -> str:
+    def register(self, cls: Type, force: bool = False) -> str:
         '''
         Registers a new process class in the remote session.
 
@@ -52,22 +62,20 @@ class ProcessManager:
         therefore, your module should only refer to modules that are already available
         in the remote session.
         '''
-        module, _, class_name = module_spec.rpartition(':')
-        if class_name in self._registry and not force:
-            return class_name
+        if cls.__name__ in self._registry and not force:
+            return cls.__name__
 
-        module = importlib.import_module(module)
-        with open(module.__file__) as fp:
+        self.initialize(force=force)
+        return self._register(cls)
+
+    def _register(self, cls: Type) -> str:
+        with open(cls.__file__) as fp:
             code = fp.read()
 
-        code += f'\n{self.INSTANCE}.register({class_name})\n'
-        self.initialize(force=force)
-
-        register_cmd = LivyRunCode(code)
-        self.session.run(register_cmd)
-
-        self._registry[class_name] = module_spec
-        return class_name
+        code += f'\n{self.INSTANCE}.register({cls.__name__})\n'
+        LivyRunCode(code).run(self.session)
+        self._registry[cls.__name__] = cls.__file__
+        return cls.__name__
 
     def start(self, class_name: str, *args, **kwargs) -> int:
         '''
@@ -93,7 +101,7 @@ class ProcessManager:
                 return globals()[handle].start(class_name, *args, **kwargs)
             '''
         )
-        _, pid = self.session.run(cmd)
+        _, pid = self.session.apply(cmd)
         return pid
 
     def poll(self, pid: int, batch_size: int = 100) -> Tuple[Optional[int], List[str]]:
@@ -110,7 +118,7 @@ class ProcessManager:
                 return globals()[handle].poll(pid, batch_size)
             '''
         )
-        _, value = self.session.run(cmd)
+        _, value = self.session.apply(cmd)
         return value
 
     def stop(self, pid: int, timeout: float = 2.0):
@@ -127,7 +135,7 @@ class ProcessManager:
                 globals()[handle].stop(pid, timeout)
             '''
         )
-        self.session.run(cmd)
+        self.session.apply(cmd)
 
     def follow(self, pid: int, pause: float = 1.0, batch_size: int = 500, println: Optional[Callable[[str], None]] = None) -> int:
         '''
