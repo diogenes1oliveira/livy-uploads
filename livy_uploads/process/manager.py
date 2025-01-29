@@ -37,7 +37,7 @@ class ProcessManager:
                 return var_name in globals()
             ''',
         )
-        _, initialized = self.session.apply(test_cmd)
+        initialized = self.session.apply(test_cmd)
         if initialized and not force:
             self._initialized = True
             return
@@ -47,6 +47,7 @@ class ProcessManager:
 
         code += f'\nglobals()[{self.INSTANCE!r}] = RemoteProcessManager()\n'
         install_cmd = LivyRunCode(code)
+        import pdb; pdb.set_trace()
         self.session.apply(install_cmd)
 
         for cls in DEFAULT_REGISTRY:
@@ -101,8 +102,8 @@ class ProcessManager:
                 return globals()[handle].start(class_name, *args, **kwargs)
             '''
         )
-        _, pid = self.session.apply(cmd)
-        return pid
+        pid = self.session.apply(cmd)
+        return int(pid)
 
     def poll(self, pid: int, batch_size: int = 100) -> Tuple[Optional[int], List[str]]:
         '''
@@ -118,8 +119,10 @@ class ProcessManager:
                 return globals()[handle].poll(pid, batch_size)
             '''
         )
-        _, value = self.session.apply(cmd)
-        return value
+        returncode, lines = self.session.apply(cmd)
+        if returncode is not None:
+            returncode = int(returncode)
+        return returncode, list(map(str, lines))
 
     def stop(self, pid: int, timeout: float = 2.0):
         '''

@@ -201,8 +201,8 @@ class HadoopProcess:
                 )
             ''',
         )
-        _, env = session.apply(cmd)
-        return env
+        env = session.apply(cmd)
+        return {str(k): (str(v) if v is not None else None) for k, v in env.items()}
 
     def get_free_ports(self, session, names: List[str], range: Optional[Tuple[int, int]] = None, timeout: float = 5.0) -> Dict[str, str]:
         '''
@@ -228,8 +228,9 @@ class HadoopProcess:
                 ''',
             )
 
-        _, ports = session.apply(cmd)
-        return ports
+        ports = session.apply(cmd)
+        return {str(k): str(v) for k, v in ports.items()}
+
 
     def configure(self, session, env: Dict[str, Optional[str]]):
         '''

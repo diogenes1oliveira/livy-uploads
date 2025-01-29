@@ -47,12 +47,9 @@ class TestCommands:
                 return now + timedelta(days=1)
             ''',
         )
-        lines, out = code_cmd.run(self.session)
-        assert not lines
-        assert isinstance(out, datetime)
-
-        actual: datetime = out
-        assert actual == now + timedelta(days=1)
+        value = code_cmd.run(self.session)
+        assert isinstance(value, datetime)
+        assert value == now + timedelta(days=1)
 
     def test_run_exception(self):
         code_cmd = LivyRunCode(
@@ -61,10 +58,11 @@ class TestCommands:
             ''',
         )
 
-        with pytest.raises(ValueError) as e:
+        with pytest.raises(LivyStatementError) as e:
             code_cmd.run(self.session)
 
-        assert isinstance(e.value.__cause__, LivyStatementError)
+        assert e.value.ename == 'ValueError'
+        assert "int('invalid')" in '\n'.join(e.value.traceback)
 
     def test_run_return_unpickleable(self):
         code_cmd = LivyRunCode(
@@ -74,10 +72,10 @@ class TestCommands:
             ''',
         )
 
-        with pytest.raises(TypeError) as e:
+        with pytest.raises(LivyStatementError) as e:
             code_cmd.run(self.session)
 
-        assert isinstance(e.value.__cause__, LivyStatementError)
+        assert e.value.ename == 'TypeError'
 
     def test_upload_file(self, tmp_path: Path):
         data = os.urandom(4096)
@@ -92,7 +90,7 @@ class TestCommands:
             chunk_size=len(data) // 4,
             progress_func=mock,
         )
-        _, actual_path = upload_cmd.run(self.session)
+        actual_path = upload_cmd.run(self.session)
         assert mock.call_count == 4
 
         test_cmd = LivyRunCode(
@@ -111,7 +109,7 @@ class TestCommands:
                 )
             ''',
         )
-        _, (chdir, actual_md5, mode) = test_cmd.run(self.session)
+        (chdir, actual_md5, mode) = test_cmd.run(self.session)
 
         expected_md5 = hashlib.md5(data).hexdigest()
 
@@ -150,3 +148,4 @@ class TestCommands:
         assert lines == []
         assert returncode == -int(signal.SIGTERM)
         assert 3 <= dt < 10
+

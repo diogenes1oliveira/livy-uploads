@@ -3,11 +3,13 @@ from io import BytesIO
 from logging import getLogger
 import os
 import pickle
+import re
 import shutil
+import sys
 import textwrap
 from tempfile import TemporaryDirectory
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar, Tuple
+from typing import Any, Callable, Dict, NamedTuple, List, Optional, TypeVar, Tuple
 from uuid import uuid4
 
 from livy_uploads.exceptions import LivyStatementError
@@ -18,66 +20,84 @@ LOGGER = getLogger(__name__)
 T = TypeVar('T')
 
 
-class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
+class Output(NamedTuple):
+    value: Any
+    stdout: str
+    stderr: str
+    exc: Optional[LivyStatementError]
+
+
+class LivyRunCode(LivyCommand[Any]):
     FUNC_PREFIX = 'livy_uploads_LivyRunCode_'
 
     '''
     Executes the function code snippet in the remote Livy session.
 
     This will wrap the code in a function to avoid polluting the global namespace. If you do need
-    to assign variables, use the `globals()` dict. Also, you can use the return statement to
+    to assign variables, use the `globals()` dict. Also, you can set a value to the underscore variable to
     get values back from the remote session.
     '''
 
-    def __init__(self, code: str, pause: float = 0.3, vars: Optional[Dict[str, Any]] = None):
+    def __init__(self, code: str, pause: float = 0.3, check: bool = True, vars: Optional[Dict[str, Any]] = None):
         '''
         Parameters:
         - code: the Pyspark function code to execute. It will be dedented automatically.
         - vars: variables to assign before the code. The values must be pickleable.
         '''
-        self.code = code
+        self.code = textwrap.dedent(code)
         self.vars = vars or {}
         self.pause = pause
+        self.check = check
 
-    def run(self, session: 'LivySession') -> Tuple[List[str], Any]:
+    def run(self, session: 'LivySession') -> Any:
         '''
         Returns:
-        - a tuple of the output lines and the return value of the code
+        - the unpickled return value of the code
         '''
-        code = ''
 
-        code_name = self.FUNC_PREFIX + 'code'
-        run_name = self.FUNC_PREFIX + 'run'
+        user_code = 'def user_code():\n' + textwrap.indent(self.code, '    ') + '\n_ = user_code()'
 
-        code += '\n' + f'def {code_name}():'
+        # fail fast if the code has syntax errors
+        compile(user_code, "<user>", "exec")
 
-        if vars:
-            # inject the pickled variables
-            code += '\n' + textwrap.indent(textwrap.dedent('''
-                from base64 import b64decode
+        vars_pickle = b64encode(pickle.dumps(self.vars)).decode('ascii')
+
+        code = textwrap.dedent(f'''
+            def LivyRunCode_cmd():
+                from base64 import b64encode, b64decode
+                from contextlib import redirect_stdout, redirect_stderr
+                from io import StringIO
+                import linecache
                 import pickle
-            '''), '    ')
-            for var_name, var_value in self.vars.items():
-                pickled_b64 = b64encode(pickle.dumps(var_value)).decode('ascii')
-                code += f'\n    {var_name} = pickle.loads(b64decode({repr(pickled_b64)}))'
-            code += '\n    del b64decode, pickle'
+                import traceback
+                from tempfile import TemporaryDirectory
 
-        code += '\n' + textwrap.indent(textwrap.dedent(self.code), '    ')
-        code += f'\n' + textwrap.dedent(f'''
-            def {run_name}():
-                from base64 import b64encode
-                import pickle
+                stdout = StringIO()
+                stderr = StringIO()
+                exc = None
+                value = None
 
-                value = {code_name}()
+                filename = "<user>"
+                code = {repr(user_code)}
+                linecache.cache[filename] = (len(code), None, code.splitlines(True), filename)
+                code = compile(code, filename, "exec")
+                code_vars = pickle.loads(b64decode({repr(vars_pickle)}))
+                code_vars = {{**globals, **code_vars}}
 
-                pickled_b64 = b64encode(pickle.dumps(value)).decode('ascii')
-                print('\\nLivyUploads:pickled_b64', len(pickled_b64), pickled_b64, end='\\n')
+                try:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        exec(code, code_vars)
+                except Exception as e:
+                    exc = (type(e).__name__, str(e), traceback.format_exc().splitlines())
+                else:
+                    value = locals.get('_', None)
 
-            {run_name}()
-            del {run_name}, {code_name}
+                result = (value, stdout.getvalue(), stderr.getvalue(), exc)
+                pickled_b64 = b64encode(pickle.dumps(result)).decode('ascii')
+                print('LivyUploads:pickled_b64', len(pickled_b64), pickled_b64)
+            LivyRunCode_cmd()
+            del LivyRunCode_cmd
         ''')
-
-        compile(code, 'source', mode='exec')  # no syntax errors
 
         r = session.request(
             'POST',
@@ -115,32 +135,48 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
         except KeyError:
             raise Exception(f'non-textual output: {output}')
 
-        try:
-            final_lines: List[str] = []
-            for line in lines:
-                if not line.startswith('LivyUploads:pickled_b64'):
-                    final_lines.append(line)
-                    continue
+        final_lines: List[str] = []
+        for line in lines:
+            if not line.startswith('LivyUploads:pickled_b64'):
+                final_lines.append(line)
+                continue
 
-                parts = line.strip().split()
-                try:
-                    prefix, size, data_b64 = parts
-                    size = int(size)
-                except Exception as e:
-                    raise RuntimeError(f'bad status line in {line!r}') from e
+            parts = line.strip().split()
+            try:
+                prefix, size, data_b64 = parts
+                size = int(size)
+            except Exception as e:
+                raise RuntimeError(f'bad status line in {line!r}') from e
 
-                if size != len(data_b64):
-                    raise ValueError(
-                        f'bad output, len does not match (expected {len(data_b64)}, got {size}: {lines}'
-                    )
-                if prefix != 'LivyUploads:pickled_b64':
-                    raise ValueError(f'bad output, unexpected prefix {prefix!r}')
+            if size != len(data_b64):
+                raise ValueError(
+                    f'bad output, len does not match (expected {len(data_b64)}, got {size}: {lines}'
+                )
+            if prefix != 'LivyUploads:pickled_b64':
+                raise ValueError(f'bad output, unexpected prefix {prefix!r}')
 
-                value = pickle.loads(b64decode(data_b64))
-                return lines[:-1], value
+            try:
+                value, stdout, stderr, exc_info = pickle.loads(b64decode(data_b64))
+            except Exception as e:
+                raise Exception(f'bad output, failed to unpickle: {data_b64}') from e
 
-        except Exception as e:
-            raise Exception(f'bad output, unexpected format: {output}') from e
+            if exc_info:
+                ename, evalue, traceback = exc_info
+                exc = LivyStatementError(ename, evalue, traceback)
+            else:
+                exc = None
+
+            if self.check:
+                print(stdout, end='')
+                print(stderr, end='', file=sys.stderr)
+                if exc:
+                    for line in exc.traceback:
+                        print(line, file=sys.stderr)
+                    raise exc
+                else:
+                    return value
+            else:
+                return Output(value, stdout, stderr, exc)
 
 
 class LivyUploadBlob(LivyCommand):
@@ -372,5 +408,5 @@ class LivyRunShell(LivyCommand[Tuple[str, int]]):
                 return proc.stdout.read(), proc.poll()
             ''',
         )
-        _, (output, returncode) = code_cmd.run(session)
-        return output, returncode
+        (output, returncode) = code_cmd.run(session)
+        return str(output), int(returncode)
