@@ -1,3 +1,15 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+'''
+This file contains all the necessary code for the cluster executor.
+
+Make sure not to import any non-standard libraries here: the contents of this file will be
+sent as is to the cluster.
+'''
+
+__all__ = ('WsWorker', 'get_free_port', 'ENV_DISABLE_MAIN')
+
 import argparse
 from base64 import b64encode, b64decode
 import os
@@ -11,7 +23,7 @@ import traceback
 import time
 import threading
 import queue
-from typing import List, Mapping, Optional, TextIO
+from typing import List, Mapping, Optional, TextIO, Tuple
 from urllib.parse import urlparse, urlunparse
 
 
@@ -45,9 +57,8 @@ class WsWorker:
         cwd: Optional[str] = None,
         ws_bin: Optional[str] = None,
         ws_args: Optional[List[str]] = None,
-        ws_log_level: str = 'WARN',
         bufsize: int = 1024,
-        pause: float = 0.1,
+        pause: float = 1.0,
         heartbeat_timeout: float = 10.0,
         kill_timeout: float = 5.0,
     ):
@@ -61,7 +72,6 @@ class WsWorker:
             ws_url: The URL of the master WebSocket server. Defaults to wss://localhost:12345/v1
             ws_bin: The path to the wstunnel binary.
             ws_args: Extra shell arguments to pass to the wstunnel binary.
-            ws_log_level: The log level to use for the wstunnel binary.
             bufsize: The buffer size to use for reading the command output.
             pause: The pause time to wait for data in the command output.
             heartbeat_timeout: The timeout to wait for the heartbeats to be received.
@@ -78,11 +88,15 @@ class WsWorker:
         self.cwd = cwd or None
         self.ws_bin = ws_bin or shutil.which('wstunnel') or '/usr/bin/wstunnel'
         self.ws_args = list(ws_args or [])
-        self.ws_log_level = ws_log_level
         self.bufsize = bufsize
         self.pause = pause
         self.heartbeat_timeout = heartbeat_timeout
         self.kill_timeout = kill_timeout
+
+    @property
+    def worker_address(self) -> Tuple[str, int]:
+        url = urlparse(self.ws_url)
+        return url.hostname, self.ws_port
 
     def run(self) -> int:
         LOGGER.info('preparing the wstunnel binary')
@@ -96,8 +110,9 @@ class WsWorker:
         os.chmod(ws_exe, 0o755)
 
         LOGGER.info('starting the wstunnel client connected to server at %r', self.ws_url)
+        ws_log_level = 'INFO' if LOGGER.isEnabledFor(logging.DEBUG) else 'WARN'
         ws_proc = subprocess.Popen(
-            [ws_exe, '--log-lvl', self.ws_log_level, 'client', '-L', f'stdio://localhost:{self.ws_port}', *self.ws_args, self.ws_url],
+            [ws_exe, '--log-lvl', ws_log_level, 'client', '-L', f'stdio://localhost:{self.ws_port}', *self.ws_args, self.ws_url],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             universal_newlines=True,
@@ -161,15 +176,23 @@ class WsWorker:
         logger = LOGGER.getChild('input')
         logger.info('polling the command input')
         try:
+            # os.set_blocking(fp.fileno(), False)
             while not done.is_set():
+                logger.debug('waiting for input data to be available')
                 ready, _, _ = select.select([fp], [], [], self.pause)
                 if not ready:
+                    logger.debug('no data in input channel yet')
                     continue
+
+                logger.debug('input data is available')
                 line = fp.readline()
-                if not line:
+                if line is None:
+                    logger.debug('no data in input channel yet')
+                    continue
+                elif not line:
+                    logger.info('input channel is closed, quitting input loop')
                     break
                 prefix, _, chunk = line.rstrip('\r\n').partition(' ')
-
                 try:
                     if prefix == 'stdin' or prefix == 'info':
                         data = b64decode(chunk.encode('utf8'))
@@ -185,6 +208,7 @@ class WsWorker:
                     continue
 
                 if prefix == 'stdin':
+                    logger.debug('got %d bytes of stdin data: %r', len(data), data)
                     if proc.poll() is not None:
                         logger.warning("can't write to stdin because the command has finished already")
                         continue
@@ -228,7 +252,7 @@ class WsWorker:
         '''
         returncode = None
         logger = LOGGER.getChild('output')
-        t0 = time.monotonic()
+        os.set_blocking(proc.stdout.fileno(), False)
 
         try:
             logger.info('sending host info')
@@ -246,6 +270,7 @@ class WsWorker:
             logger.info('polling the command output')
             while True:
 
+                logger.debug('checking the heartbeats')
                 while True:
                     try:
                         last_heartbeat = heartbeats.get_nowait()
@@ -255,15 +280,22 @@ class WsWorker:
                 if time.monotonic() - last_heartbeat > self.heartbeat_timeout:
                     raise RuntimeError('Heartbeat timeout')
 
+                logger.debug('checking for data in stdout')
                 ready, _, _ = select.select([proc.stdout], [], [], self.pause)
                 if not ready:
                     if proc.poll() is not None:
                         logger.info('Command has finished and stdout is done')
                         break
                     else:
+                        logger.debug('no data in stdout yet')
                         continue
+                logger.debug('stdout is ready')
                 data = proc.stdout.read(self.bufsize)
-                if not data:
+                logger.debug('read %d bytes from stdout: %r', len(data or b''), data)
+                if data is None:
+                    logger.debug('got None from stdout')
+                    continue
+                elif not data:
                     logger.info('Command stdout is done')
                     break
                 chunk = b64encode(data).decode('utf8')
@@ -335,7 +367,6 @@ def main():
         cwd=args.cwd,
         ws_bin=args.ws_bin,
         ws_args=args.ws_arg,
-        ws_log_level=('INFO' if args.log_level == 'DEBUG' else 'WARN'),
         bufsize=args.bufsize,
         pause=args.pause,
         kill_timeout=args.timeout,
