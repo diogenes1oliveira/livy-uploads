@@ -15,6 +15,8 @@ RUN pip3 install --no-cache-dir -r ./requirements-dev.txt
 COPY ./requirements.txt ./
 RUN pip3 install --no-cache-dir -r ./requirements.txt
 
+RUN curl -sfL 'https://github.com/erebe/wstunnel/releases/download/v10.4.4/wstunnel_10.4.4_linux_amd64.tar.gz' | tar xz -C /usr/bin/ wstunnel
+
 RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | awk '{print $NF}')" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
     echo >&2 "ERROR: couldn't find path to sparkmagic. OUTPUT: "; \
     pip3 show sparkmagic 2>&1 | sed 's/^/>  /'; \

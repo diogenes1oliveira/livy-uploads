@@ -60,10 +60,15 @@
   "ignore_ssl_errors": false,
   "session_configs": {
     "driverMemory": "1000M",
-    "executorCores": 2
+    "executorCores": 2,
+    "conf": {
+      "spark.ui.enabled": "true"
+    }
   },
   "session_configs_defaults": {
-    "conf": {}
+    "conf": {
+      "spark.ui.enabled": "true"
+    }
   },
   "use_auto_viz": true,
   "coerce_dataframe": true,
