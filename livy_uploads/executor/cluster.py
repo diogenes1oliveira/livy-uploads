@@ -70,10 +70,11 @@ class StdinMessage(NamedTuple):
 
         if proc.poll() is not None:
             INPUT_LOGGER.warning("can't write to stdin because the command has finished already")
-        elif proc.stdin.closed:
+        elif protocol.stdin_closed.is_set():
             INPUT_LOGGER.warning("can't write to stdin because it has been closed already")
         elif self.eof:
             INPUT_LOGGER.info('Closing stdin')
+            protocol.stdin_closed.set()
             proc.stdin.close()
         else:
             proc.stdin.write(self.data)
@@ -117,8 +118,9 @@ class SignalMessage(NamedTuple):
 
 class WsProtocol:
     def __init__(self):
-        self.last_heartbeat: Optional[float] = None
+        self.last_heartbeat: float = -1.0
         self.acked = threading.Event()
+        self.stdin_closed = threading.Event()
 
     def parse(self, line: Union[bytes, str]) -> Union[StdinMessage, SignalMessage, AckMessage]:
         if isinstance(line, bytes):
@@ -206,7 +208,6 @@ class WsWorker:
         self.pause = pause
         self.heartbeat_timeout = heartbeat_timeout
         self.kill_timeout = kill_timeout
-        self._last_heartbeat = -1.0
 
     @property
     def worker_address(self) -> Tuple[str, int]:
@@ -221,8 +222,22 @@ class WsWorker:
             pass
 
         ws_exe = os.path.abspath('bin/wstunnel')
-        shutil.copy(self.ws_bin, ws_exe)
-        os.chmod(ws_exe, 0o755)
+        if os.path.exists(ws_exe):
+            LOGGER.info('checking already copied wstunnel binary')
+            process = subprocess.run(
+                [ws_exe, '--version'],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if process.returncode != 0:
+                LOGGER.warning('wstunnel binary is not working, removing it')
+                os.unlink(ws_exe)
+
+        if not os.path.exists(ws_exe):
+            LOGGER.info('copying wstunnel binary to %r', ws_exe)
+            shutil.copy(self.ws_bin, ws_exe)
+            os.chmod(ws_exe, 0o755)
 
         LOGGER.info('starting the wstunnel client connected to server at %r', self.ws_url)
         ws_log_level = 'INFO' if LOGGER.isEnabledFor(logging.DEBUG) else 'WARN'
@@ -248,16 +263,14 @@ class WsWorker:
         )
         LOGGER.info('command started with pid %s', cmd_proc.pid)
 
-        acked = threading.Event()
-        done = threading.Event()
+        protocol = WsProtocol()
         thread = threading.Thread(
             daemon=True,
             target=self._receive_input,
             kwargs=dict(
                 fp=ws_proc.stdout,
                 proc=cmd_proc,
-                acked=acked,
-                done=done,
+                protocol=protocol,
             ),
         )
         thread.start()
@@ -266,12 +279,14 @@ class WsWorker:
             self._send_output(
                 proc=cmd_proc,
                 fp=ws_proc.stdin,
-                acked=acked,
+                protocol=protocol,
             )
         finally:
-            ws_proc.terminate()
-            done.set()
-            thread.join(timeout=self.kill_timeout)
+            if not protocol.acked.wait(timeout=self.kill_timeout):
+                ws_proc.kill()
+                ws_proc.wait(timeout=self.pause)
+
+            thread.join(timeout=self.pause)
 
         if thread.is_alive():
             raise RuntimeError('Command input polling thread did not finish')
@@ -281,81 +296,23 @@ class WsWorker:
 
         return cmd_proc.returncode
 
-    def _receive_input(self, fp: BinaryIO, proc: subprocess.Popen, acked: threading.Event, done: threading.Event):
+    def _receive_input(self, fp: BinaryIO, proc: subprocess.Popen, protocol: WsProtocol):
         '''
         Receives input from the master and writes it to the subprocess stdin
         '''
         logger = LOGGER.getChild('input')
         logger.info('polling the command input')
-        stdin_closed = False
 
         try:
-            # os.set_blocking(fp.fileno(), False)
-            while not done.is_set():
-                # logger.debug('waiting for input data to be available')
-                # ready, _, _ = select.select([fp], [], [], self.pause)
-                # if not ready:
-                #     logger.debug('no data in input channel yet')
-                #     continue
-
-                # logger.debug('input data is available')
+            while not protocol.acked.is_set():
                 logger.debug('waiting next input line')
                 data = fp.readline()
+
                 if not data:
                     logger.info('input channel is closed, quitting input loop')
                     break
 
-                try:
-                    line = data.rstrip(b'\r\n').decode('utf8')
-                    prefix, _, chunk = line.partition(' ')
-                    if prefix == 'stdin' or prefix == 'info':
-                        data = b64decode(chunk.encode('utf8'))
-                    elif prefix == 'signal':
-                        signum = int(chunk)
-                    elif prefix == 'ack':
-                        pass
-                    else:
-                        logger.warning('Received unknown prefix: %r', line)
-                        continue
-                except ValueError:
-                    logger.warning('Bad data for prefix %r', prefix, exc_info=True)
-                    continue
-
-                logger.debug('got line with prefix %r', prefix)
-
-                if prefix == 'stdin':
-                    if logger.isEnabledFor(logging.DEBUG):
-                        if len(data) > 50:
-                            log_data = data[:50] + b'...'
-                        else:
-                            log_data = data
-                        logger.debug('got %d bytes of stdin data: %r', len(data), log_data)
-                    if proc.poll() is not None:
-                        logger.warning("can't write to stdin because the command has finished already")
-                        continue
-                    elif stdin_closed:
-                        logger.warning("can't write to stdin because it has been closed already")
-                    elif not data:
-                        logger.info('Closing stdin')
-                        stdin_closed = True
-                        proc.stdin.close()
-                    else:
-                        proc.stdin.write(data)
-                        proc.stdin.flush()
-                elif prefix == 'signal':
-                    if signum == 0:
-                        logger.info('Heartbeat received')
-                        self._last_heartbeat = time.monotonic()
-                    elif proc.poll() is not None:
-                        logger.warning("can't send signal %s because the command has finished already", signum)
-                    else:
-                        logger.info('Sending signal %s', signum)
-                        proc.send_signal(signum)
-                elif prefix == 'ack':
-                    logger.info('Received ack')
-                    acked.set()
-                elif prefix == 'info':
-                    logger.info('Received info: %r', chunk)
+                protocol.handle(data, proc)
         except Exception:
             logger.exception('Command input polling failed')
             if proc.poll() is not None:
@@ -367,7 +324,7 @@ class WsWorker:
         finally:
             logger.info('stdin polling done')
 
-    def _send_output(self, proc: subprocess.Popen, fp: BinaryIO, acked: threading.Event):
+    def _send_output(self, proc: subprocess.Popen, fp: BinaryIO, protocol: WsProtocol):
         '''
         Polls and sends the output and returncode of a subprocess
         '''
@@ -384,16 +341,15 @@ class WsWorker:
 
             logger.info('waiting for the first heartbeat')
             t0 = time.monotonic()
-            while self._last_heartbeat < 0:
+            while protocol.last_heartbeat < 0:
                 if time.monotonic() - t0 > self.heartbeat_timeout:
                     raise RuntimeError("didn't get an initial heartbeat in time")
                 time.sleep(self.pause)
 
             logger.info('polling the command output')
             while True:
-
                 logger.debug('checking the heartbeats')
-                if time.monotonic() - self._last_heartbeat > self.heartbeat_timeout:
+                if time.monotonic() - protocol.last_heartbeat > self.heartbeat_timeout:
                     raise RuntimeError('Heartbeat timeout')
 
                 logger.debug('checking for data in stdout')
@@ -431,8 +387,8 @@ class WsWorker:
             fp.flush()
 
             logger.info('waiting for the ack')
-            acked.wait(timeout=self.kill_timeout)
-            if not acked.is_set():
+            protocol.acked.wait(timeout=self.kill_timeout)
+            if not protocol.acked.is_set():
                 raise RuntimeError('Not acked in time')
 
         except Exception:
