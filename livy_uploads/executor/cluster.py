@@ -23,7 +23,7 @@ import traceback
 import time
 import threading
 import queue
-from typing import List, Mapping, Optional, TextIO, Tuple
+from typing import BinaryIO, List, Mapping, Optional, TextIO, Tuple
 from urllib.parse import urlparse, urlunparse
 
 
@@ -115,7 +115,7 @@ class WsWorker:
             [ws_exe, '--log-lvl', ws_log_level, 'client', '-L', f'stdio://localhost:{self.ws_port}', *self.ws_args, self.ws_url],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            universal_newlines=True,
+            # universal_newlines=True,
         )
 
         LOGGER.info('starting the command %r', self.command)
@@ -169,7 +169,7 @@ class WsWorker:
 
         return cmd_proc.returncode
 
-    def _receive_input(self, fp: TextIO, proc: subprocess.Popen, heartbeats: queue.Queue, acked: threading.Event, done: threading.Event):
+    def _receive_input(self, fp: BinaryIO, proc: subprocess.Popen, heartbeats: queue.Queue, acked: threading.Event, done: threading.Event):
         '''
         Receives input from the master and writes it to the subprocess stdin
         '''
@@ -185,15 +185,17 @@ class WsWorker:
                     continue
 
                 logger.debug('input data is available')
-                line = fp.readline()
-                if line is None:
+                data = fp.readline()
+                if data is None:
                     logger.debug('no data in input channel yet')
                     continue
-                elif not line:
+                elif not data:
                     logger.info('input channel is closed, quitting input loop')
                     break
-                prefix, _, chunk = line.rstrip('\r\n').partition(' ')
+                
                 try:
+                    line = data.rstrip(b'\r\n').decode('utf8')
+                    prefix, _, chunk = line.partition(' ')
                     if prefix == 'stdin' or prefix == 'info':
                         data = b64decode(chunk.encode('utf8'))
                     elif prefix == 'signal':
@@ -246,7 +248,7 @@ class WsWorker:
         finally:
             logger.info('stdin polling done')
 
-    def _send_output(self, proc: subprocess.Popen, fp: TextIO, heartbeats: queue.Queue, acked: threading.Event):
+    def _send_output(self, proc: subprocess.Popen, fp: BinaryIO, heartbeats: queue.Queue, acked: threading.Event):
         '''
         Polls and sends the output and returncode of a subprocess
         '''
@@ -258,7 +260,7 @@ class WsWorker:
             logger.info('sending host info')
             info = f'hostname={socket.getfqdn()} pid={proc.pid}'
             line = f'info {info}\n'
-            fp.write(line)
+            fp.write(line.encode('utf8'))
             fp.flush()
 
             logger.info('waiting for the first heartbeat')
@@ -300,7 +302,7 @@ class WsWorker:
                     break
                 chunk = b64encode(data).decode('utf8')
                 line = f'stdout {chunk}\n'
-                fp.write(line)
+                fp.write(line.encode('utf8'))
                 fp.flush()
 
             logger.info('Output polling done, waiting for returncode')
@@ -309,7 +311,7 @@ class WsWorker:
             logger.info('command finished with returncode %s', returncode)
             if returncode is None:
                 returncode = 1
-            fp.write(f'returncode {returncode}\n')
+            fp.write(f'returncode {returncode}\n'.encode('utf8'))
             fp.flush()
 
             logger.info('waiting for the ack')
@@ -321,7 +323,7 @@ class WsWorker:
             logger.exception('Command output polling failed')
             chunk = b64encode(traceback.format_exc().encode('utf8')).decode('utf8')
             line = f'stdout: {chunk}\n'
-            fp.write(line)
+            fp.write(line.encode('utf8'))
             fp.flush()
             proc.kill()
         finally:
