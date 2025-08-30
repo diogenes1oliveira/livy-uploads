@@ -206,6 +206,7 @@ class WsWorker:
         self.pause = pause
         self.heartbeat_timeout = heartbeat_timeout
         self.kill_timeout = kill_timeout
+        self._last_heartbeat = -1.0
 
     @property
     def worker_address(self) -> Tuple[str, int]:
@@ -247,7 +248,6 @@ class WsWorker:
         )
         LOGGER.info('command started with pid %s', cmd_proc.pid)
 
-        heartbeats = queue.Queue()
         acked = threading.Event()
         done = threading.Event()
         thread = threading.Thread(
@@ -256,7 +256,6 @@ class WsWorker:
             kwargs=dict(
                 fp=ws_proc.stdout,
                 proc=cmd_proc,
-                heartbeats=heartbeats,
                 acked=acked,
                 done=done,
             ),
@@ -267,7 +266,6 @@ class WsWorker:
             self._send_output(
                 proc=cmd_proc,
                 fp=ws_proc.stdin,
-                heartbeats=heartbeats,
                 acked=acked,
             )
         finally:
@@ -283,7 +281,7 @@ class WsWorker:
 
         return cmd_proc.returncode
 
-    def _receive_input(self, fp: BinaryIO, proc: subprocess.Popen, heartbeats: queue.Queue, acked: threading.Event, done: threading.Event):
+    def _receive_input(self, fp: BinaryIO, proc: subprocess.Popen, acked: threading.Event, done: threading.Event):
         '''
         Receives input from the master and writes it to the subprocess stdin
         '''
@@ -347,7 +345,7 @@ class WsWorker:
                 elif prefix == 'signal':
                     if signum == 0:
                         logger.info('Heartbeat received')
-                        heartbeats.put(time.monotonic())
+                        self._last_heartbeat = time.monotonic()
                     elif proc.poll() is not None:
                         logger.warning("can't send signal %s because the command has finished already", signum)
                     else:
@@ -369,7 +367,7 @@ class WsWorker:
         finally:
             logger.info('stdin polling done')
 
-    def _send_output(self, proc: subprocess.Popen, fp: BinaryIO, heartbeats: queue.Queue, acked: threading.Event):
+    def _send_output(self, proc: subprocess.Popen, fp: BinaryIO, acked: threading.Event):
         '''
         Polls and sends the output and returncode of a subprocess
         '''
@@ -385,22 +383,17 @@ class WsWorker:
             fp.flush()
 
             logger.info('waiting for the first heartbeat')
-            try:
-                last_heartbeat = heartbeats.get(timeout=self.heartbeat_timeout)
-            except queue.Empty:
-                raise RuntimeError(f'No heartbeat received in {self.heartbeat_timeout} seconds')
+            t0 = time.monotonic()
+            while self._last_heartbeat < 0:
+                if time.monotonic() - t0 > self.heartbeat_timeout:
+                    raise RuntimeError("didn't get an initial heartbeat in time")
+                time.sleep(self.pause)
 
             logger.info('polling the command output')
             while True:
 
                 logger.debug('checking the heartbeats')
-                while True:
-                    try:
-                        last_heartbeat = heartbeats.get_nowait()
-                    except queue.Empty:
-                        break
-
-                if time.monotonic() - last_heartbeat > self.heartbeat_timeout:
+                if time.monotonic() - self._last_heartbeat > self.heartbeat_timeout:
                     raise RuntimeError('Heartbeat timeout')
 
                 logger.debug('checking for data in stdout')
