@@ -20,15 +20,18 @@ import shlex
 import shutil
 import select
 import traceback
+import re
 import time
 import threading
 import queue
-from typing import BinaryIO, List, Mapping, Optional, Tuple
+from typing import BinaryIO, List, Mapping, Optional, Tuple, NamedTuple, Union
 from urllib.parse import urlparse, urlunparse
 
 
 # name it explicitly because it will change when submitting directly to Livy
 LOGGER = logging.getLogger('livy_uploads.executor.worker')
+INPUT_LOGGER = LOGGER.getChild('input')
+OUTPUT_LOGGER = LOGGER.getChild('output')
 
 ENV_DISABLE_MAIN = 'LIVY_UPLOADS_EXECUTOR_DISABLE_MAIN'
 '''
@@ -46,6 +49,117 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
+class StdinMessage(NamedTuple):
+    data: bytes
+
+    @property
+    def eof(self) -> bool:
+        return not self.data
+
+    @classmethod
+    def parse(cls, chunk: bytes) -> 'StdinMessage':
+        return cls(data=b64decode(chunk.encode('utf8')))
+
+    def handle(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
+        if INPUT_LOGGER.isEnabledFor(logging.DEBUG):
+            if len(self.data) > 50:
+                log_data = self.data[:50] + b'...'
+            else:
+                log_data = self.data
+            INPUT_LOGGER.debug('got %d bytes of stdin data: %r', len(self.data), log_data)
+
+        if proc.poll() is not None:
+            INPUT_LOGGER.warning("can't write to stdin because the command has finished already")
+        elif proc.stdin.closed:
+            INPUT_LOGGER.warning("can't write to stdin because it has been closed already")
+        elif self.eof:
+            INPUT_LOGGER.info('Closing stdin')
+            proc.stdin.close()
+        else:
+            proc.stdin.write(self.data)
+            proc.stdin.flush()
+
+
+class AckMessage(NamedTuple):
+    @classmethod
+    def parse(cls, chunk: bytes) -> 'AckMessage':
+        if chunk:
+            raise ValueError('Ack message does not expect any data')
+        return cls()
+
+    def handle(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
+        INPUT_LOGGER.info('Received ack')
+        protocol.acked.set()
+
+
+class SignalMessage(NamedTuple):
+    signum: int
+
+    @property
+    def heartbeat(self) -> bool:
+        return self.signum == 0
+
+    @classmethod
+    def parse(cls, chunk: bytes) -> 'SignalMessage':
+        signum = int(chunk)
+        return cls(signum=signum)
+
+    def handle(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
+        if self.heartbeat:
+            INPUT_LOGGER.info('Heartbeat received')
+            protocol.last_heartbeat = time.monotonic()
+        elif proc.poll() is not None:
+            INPUT_LOGGER.warning("can't send signal %s because the command has finished already", self.signum)
+        else:
+            INPUT_LOGGER.info('Sending signal %s', self.signum)
+            proc.send_signal(self.signum)
+
+
+class WsProtocol:
+    def __init__(self):
+        self.last_heartbeat: Optional[float] = None
+        self.acked = threading.Event()
+
+    def parse(self, line: Union[bytes, str]) -> Union[StdinMessage, SignalMessage, AckMessage]:
+        if isinstance(line, bytes):
+            line = line.decode('utf8')
+
+        prefix, _, chunk = line.rstrip('\r\n').partition(' ')
+        if prefix == 'stdin':
+            return StdinMessage.parse(chunk)
+        elif prefix == 'signal':
+            return SignalMessage.parse(chunk)
+        elif prefix == 'ack':
+            return AckMessage.parse(chunk)
+        else:
+            raise ValueError('Unknown prefix: %r', prefix)
+
+    def handle(self, line: Union[bytes, str], proc: subprocess.Popen):
+        try:
+            message = self.parse(line)
+        except ValueError:
+            INPUT_LOGGER.warning('bad input data', exc_info=True)
+            return
+
+        message.handle(proc, self)
+
+
+# _info_pattern = re.compile(r'hostname=(.*) pid=(\d+)')
+
+# class InfoMessage(NamedTuple):
+#     hostname: str
+#     pid: int
+
+#     @classmethod
+#     def parse(cls, chunk: bytes) -> 'InfoMessage':
+#         match = _info_pattern.match(chunk.decode('utf8'))
+#         if not match:
+#             raise ValueError('Invalid info message')
+#         return cls(hostname=match.group(1), pid=int(match.group(2)))
+
+
+# class WsProtocol:
+#     def 
 class WsWorker:
     def __init__(
         self,
@@ -189,10 +303,7 @@ class WsWorker:
                 # logger.debug('input data is available')
                 logger.debug('waiting next input line')
                 data = fp.readline()
-                if data is None:
-                    logger.debug('no data in input channel yet')
-                    continue
-                elif not data:
+                if not data:
                     logger.info('input channel is closed, quitting input loop')
                     break
 
