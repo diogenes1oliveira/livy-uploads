@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import re
+import logging
 import select
 import signal
 import secrets
@@ -8,11 +9,13 @@ import subprocess
 import socket
 import threading
 import time
-from uuid import uuid4
+from typing import Union
 
 import pytest
 
 from livy_uploads.executor.cluster import WsWorker, get_free_port
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TestWsWorker:
@@ -94,7 +97,7 @@ class TestWsWorker:
                 '''
                     read -r LINE
                     printf '%s' "$LINE" | tr -d '\r\n' | md5sum | awk '{print $1}'
-                    md5sum
+                    md5sum | awk '{print $1}'
                 ''',
             ],
         )
@@ -116,8 +119,8 @@ class TestWsWorker:
         line = 'oi'
         expected_md5 = md5hex(line.encode('utf8'))
         writeline('stdin ' + b64dumps(line + '\n'))
-        time.sleep(5)
-        return
+        # time.sleep(5)
+        # return
         assert readline() == 'stdout ' + b64dumps(expected_md5 + '\n')
 
         # long random binary input
@@ -171,15 +174,21 @@ class TestWsWorker:
     def accept(self, server: socket.socket):
         sock, _ = server.accept()
         rfile = sock.makefile(mode='r')
-        wfile = sock.makefile(mode='w')
         readline = lambda: rfile.readline().rstrip('\r\n')
-        writeline = lambda line: (wfile.write(line.rstrip('\r\n') + '\n'), wfile.flush())
+        def writeline(line: str):
+            data = (line.rstrip('\r\n') + '\n').encode('utf8')
+            LOGGER.debug('writeline %r', data if len(data) < 50 else data[:50] + b'...')
+            sock.sendall(data)
         return sock, readline, writeline
 
 
-def b64dumps(s: str) -> str:
-    return base64.b64encode(s.encode('utf8')).decode('utf8')
+def b64dumps(s: Union[str, bytes]) -> str:
+    if isinstance(s, str):
+        s = s.encode('utf8')
+    return base64.b64encode(s).decode('utf8')
 
 
-def md5hex(data: bytes) -> str:
+def md5hex(data: Union[str, bytes]) -> str:
+    if isinstance(data, str):
+        data = data.encode('utf8')
     return hashlib.md5(data).hexdigest()

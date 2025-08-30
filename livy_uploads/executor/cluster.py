@@ -23,7 +23,7 @@ import traceback
 import time
 import threading
 import queue
-from typing import BinaryIO, List, Mapping, Optional, TextIO, Tuple
+from typing import BinaryIO, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 
@@ -157,9 +157,9 @@ class WsWorker:
                 acked=acked,
             )
         finally:
+            ws_proc.terminate()
             done.set()
             thread.join(timeout=self.kill_timeout)
-            ws_proc.terminate()
 
         if thread.is_alive():
             raise RuntimeError('Command input polling thread did not finish')
@@ -175,16 +175,19 @@ class WsWorker:
         '''
         logger = LOGGER.getChild('input')
         logger.info('polling the command input')
+        stdin_closed = False
+
         try:
             # os.set_blocking(fp.fileno(), False)
             while not done.is_set():
-                logger.debug('waiting for input data to be available')
-                ready, _, _ = select.select([fp], [], [], self.pause)
-                if not ready:
-                    logger.debug('no data in input channel yet')
-                    continue
+                # logger.debug('waiting for input data to be available')
+                # ready, _, _ = select.select([fp], [], [], self.pause)
+                # if not ready:
+                #     logger.debug('no data in input channel yet')
+                #     continue
 
-                logger.debug('input data is available')
+                # logger.debug('input data is available')
+                logger.debug('waiting next input line')
                 data = fp.readline()
                 if data is None:
                     logger.debug('no data in input channel yet')
@@ -192,7 +195,7 @@ class WsWorker:
                 elif not data:
                     logger.info('input channel is closed, quitting input loop')
                     break
-                
+
                 try:
                     line = data.rstrip(b'\r\n').decode('utf8')
                     prefix, _, chunk = line.partition(' ')
@@ -209,13 +212,23 @@ class WsWorker:
                     logger.warning('Bad data for prefix %r', prefix, exc_info=True)
                     continue
 
+                logger.debug('got line with prefix %r', prefix)
+
                 if prefix == 'stdin':
-                    logger.debug('got %d bytes of stdin data: %r', len(data), data)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        if len(data) > 50:
+                            log_data = data[:50] + b'...'
+                        else:
+                            log_data = data
+                        logger.debug('got %d bytes of stdin data: %r', len(data), log_data)
                     if proc.poll() is not None:
                         logger.warning("can't write to stdin because the command has finished already")
                         continue
-                    if not data:
+                    elif stdin_closed:
+                        logger.warning("can't write to stdin because it has been closed already")
+                    elif not data:
                         logger.info('Closing stdin')
+                        stdin_closed = True
                         proc.stdin.close()
                     else:
                         proc.stdin.write(data)
@@ -226,17 +239,14 @@ class WsWorker:
                         heartbeats.put(time.monotonic())
                     elif proc.poll() is not None:
                         logger.warning("can't send signal %s because the command has finished already", signum)
-                        continue
                     else:
                         logger.info('Sending signal %s', signum)
                         proc.send_signal(signum)
                 elif prefix == 'ack':
                     logger.info('Received ack')
                     acked.set()
-                    continue
                 elif prefix == 'info':
                     logger.info('Received info: %r', chunk)
-                    continue
         except Exception:
             logger.exception('Command input polling failed')
             if proc.poll() is not None:
@@ -291,6 +301,7 @@ class WsWorker:
                     else:
                         logger.debug('no data in stdout yet')
                         continue
+
                 logger.debug('stdout is ready')
                 data = proc.stdout.read(self.bufsize)
                 logger.debug('read %d bytes from stdout: %r', len(data or b''), data)
@@ -300,6 +311,7 @@ class WsWorker:
                 elif not data:
                     logger.info('Command stdout is done')
                     break
+
                 chunk = b64encode(data).decode('utf8')
                 line = f'stdout {chunk}\n'
                 fp.write(line.encode('utf8'))
