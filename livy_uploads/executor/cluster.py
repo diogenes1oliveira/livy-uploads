@@ -11,6 +11,7 @@ sent as is to the cluster.
 __all__ = ('WsWorker', 'get_free_port', 'ENV_DISABLE_MAIN')
 
 import argparse
+from abc import abstractmethod
 from base64 import b64encode, b64decode
 import os
 import socket
@@ -24,7 +25,14 @@ import re
 import time
 import threading
 import queue
-from typing import BinaryIO, List, Mapping, Optional, Tuple, NamedTuple, Union
+from typing import BinaryIO, ClassVar, Dict, List, Mapping, Optional, Tuple, Type, TypeVar, NamedTuple, Union, TYPE_CHECKING
+try:
+    from typing import Protocol
+except ImportError:
+    # Python 3.6 didn't have the Protocol type yet
+    from abc import ABC
+    Protocol = ABC
+
 from urllib.parse import urlparse, urlunparse
 
 
@@ -47,6 +55,20 @@ def get_free_port() -> int:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('localhost', 0))
         return s.getsockname()[1]
+
+
+T = TypeVar('T', bound='Message')
+
+class Message(Protocol):
+    # Ideally this should be a dataclass following a Protocol but Python 3.6 didn't have those yet
+    @classmethod
+    @abstractmethod
+    def parse(cls: Type[T], chunk: bytes) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def handle(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
+        raise NotImplementedError
 
 
 class StdinMessage(NamedTuple):
@@ -89,6 +111,10 @@ class AckMessage(NamedTuple):
         return cls()
 
     def handle(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
+        if proc.poll() is None:
+            INPUT_LOGGER.warning('Ignoring ack before the command has finished')
+            return
+
         INPUT_LOGGER.info('Received ack')
         protocol.acked.set()
 
@@ -117,24 +143,28 @@ class SignalMessage(NamedTuple):
 
 
 class WsProtocol:
+    TYPES: ClassVar[Dict[str, Type[Message]]] = {
+        'stdin': StdinMessage,
+        'signal': SignalMessage,
+        'ack': AckMessage,
+    }
+
     def __init__(self):
         self.last_heartbeat: float = -1.0
         self.acked = threading.Event()
         self.stdin_closed = threading.Event()
 
-    def parse(self, line: Union[bytes, str]) -> Union[StdinMessage, SignalMessage, AckMessage]:
+    def parse(self, line: Union[bytes, str]) -> Message:
         if isinstance(line, bytes):
             line = line.decode('utf8')
 
         prefix, _, chunk = line.rstrip('\r\n').partition(' ')
-        if prefix == 'stdin':
-            return StdinMessage.parse(chunk)
-        elif prefix == 'signal':
-            return SignalMessage.parse(chunk)
-        elif prefix == 'ack':
-            return AckMessage.parse(chunk)
-        else:
+        try:
+            cls: Type[Message] = self.TYPES[prefix]
+        except KeyError:
             raise ValueError('Unknown prefix: %r', prefix)
+
+        return cls.parse(chunk)
 
     def handle(self, line: Union[bytes, str], proc: subprocess.Popen):
         try:
