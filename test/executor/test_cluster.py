@@ -21,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 class TestWsWorker:
     def test_happy_output(self, ws_server: str, sock_port: int, sock_server: socket.socket):
         ws_worker = WsWorker(
-            ws_port=sock_port,
+            master_port=sock_port,
             ws_url=ws_server,
             command='bash',
             args=[
@@ -89,7 +89,7 @@ class TestWsWorker:
 
     def test_happy_input(self, ws_server: str, sock_port: int, sock_server: socket.socket):
         ws_worker = WsWorker(
-            ws_port=sock_port,
+            master_port=sock_port,
             ws_url=ws_server,
             command='bash',
             args=[
