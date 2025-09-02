@@ -61,10 +61,10 @@ class TestCommands:
             ''',
         )
 
-        with pytest.raises(ValueError) as e:
+        with pytest.raises(LivyStatementError) as e:
             code_cmd.run(self.session)
 
-        assert isinstance(e.value.__cause__, LivyStatementError)
+        assert isinstance(e.value.as_builtin(), ValueError)
 
     def test_run_return_unpickleable(self):
         code_cmd = LivyRunCode(
@@ -74,10 +74,10 @@ class TestCommands:
             ''',
         )
 
-        with pytest.raises(TypeError) as e:
+        with pytest.raises(LivyStatementError) as e:
             code_cmd.run(self.session)
 
-        assert isinstance(e.value.__cause__, LivyStatementError)
+        assert isinstance(e.value.as_builtin(), TypeError)
 
     def test_upload_file(self, tmp_path: Path):
         data = os.urandom(4096)

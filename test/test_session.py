@@ -120,7 +120,8 @@ class TestLivySessionEndpoint:
             thread = InheritableThread(target=run, daemon=True)
             thread.start()
         ''')
-        r = session.post(
+        r = session.request(
+            'POST',
             f"/sessions/{session.session_id}/statements",
             json={
                 'kind': 'pyspark',

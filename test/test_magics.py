@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import papermill
+import pytest
 
 
+@pytest.mark.skip(reason="needs to configure sparkmagic")
 def test_example_magics(request):
     rootdir = request.config.rootdir
 
