@@ -133,7 +133,7 @@ class LivyUploaderMagics(Magics):
         cmd = LivyRunCode(
             vars=dict(varname=args.varname),
             code='''
-                return globals()[varname]
+                _ = globals()[varname]
             '''
         )
         _, result = session.apply(cmd)
@@ -214,7 +214,7 @@ class LivyUploaderMagics(Magics):
                 mode=args.mode or 0o600,
             )
 
-        _, final_path = session.apply(cmd)
+        final_path = session.apply(cmd)
         self.ipython_display.write(f"Uploaded {source} to {final_path}")
 
     @magic_arguments()

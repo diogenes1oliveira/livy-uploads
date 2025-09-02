@@ -9,15 +9,13 @@ __all__ = ('LivyPrepareMaster', 'LivyStartProcess')
 
 
 import logging
-from pathlib import Path
 from typing import List, Optional, TypeVar, Mapping
 from uuid import uuid4
 
-from livy_uploads.commands import LivyRunCode
+from livy_uploads.commands import LivyRunCode, LivyUploadFile
 from livy_uploads.executor import cluster
 from livy_uploads.executor.cluster import WorkerInfo
 from livy_uploads.session import LivySession, LivyCommand
-from livy_uploads.sourcecode import remove_type_annotations
 
 
 LOGGER = logging.getLogger(__name__)
@@ -34,18 +32,19 @@ class LivyPrepareMaster(LivyCommand[str]):
         Executes the upload
         '''
         LOGGER.info('sending the cluster code')
-
-        cluster_code = remove_type_annotations(Path(cluster.__file__).read_text())
-        init_code = '\n'.join([
-            'import os',
-            f'os.environ["{cluster.ENV_DISABLE_MAIN}"] = "1"',
-        ])
-        command = LivyRunCode(code=init_code + '\n' + cluster_code)
-        command.run(session)
+        LivyUploadFile(
+            source_path=cluster.__file__,
+            dest_path='livy_uploads_executor_cluster.py',
+            chunk_size=1024,
+            mode=0o644,
+        ).run(session)
 
         LOGGER.info('starting the callback server')
         command = LivyRunCode(
             code='''
+                spark.sparkContext.addPyFile('livy_uploads_executor_cluster.py')
+                from livy_uploads_executor_cluster import CallbackServer
+
                 callback_server = CallbackServer()
                 callback_server.start()
                 _ = callback_server.url
@@ -98,10 +97,12 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
             code=f'''
                 import logging
                 from pyspark import InheritableThread
+                from livy_uploads_executor_cluster import WorkerServer
 
                 kwargs['name'] = name
                 kwargs['callback'] = callback_server.url.rstrip('/') + '/info'
-                def {fname}(kwargs):
+
+                def {fname}_worker(kwargs):
                     logging.basicConfig(
                         level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(name)s: %(message)s',
@@ -111,8 +112,11 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
                     worker = WorkerServer(**kwargs)
                     return worker.run()
 
-                rdd = spark.sparkContext.parallelize([kwargs]).map({fname})
-                thread = InheritableThread(daemon=True, target=rdd.collect)
+                def {fname}_master(kwargs):
+                    rdd = spark.sparkContext.parallelize([kwargs]).map({fname}_worker)
+                    rdd.collect()
+
+                thread = InheritableThread(daemon=True, target={fname}_master, args=(kwargs,))
                 thread.start()
 
                 info = callback_server.get_info(name)
