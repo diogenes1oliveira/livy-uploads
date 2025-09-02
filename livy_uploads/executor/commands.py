@@ -34,12 +34,12 @@ class LivyPrepareMaster(LivyCommand[str]):
         '''
         LOGGER.info('sending the cluster code')
 
-        code = Path(cluster.__file__).read_text()
-        disable_main = f'import os; os.environ["{cluster.ENV_DISABLE_MAIN}"] = "1"'
-        command = LivyRunCode(
-            code=disable_main + '\n' + code,
-            globals=cluster.__all__,
-        )
+        cluster_code = Path(cluster.__file__).read_text()
+        init_code = '\n'.join([
+            'import os',
+            f'os.environ["{cluster.ENV_DISABLE_MAIN}"] = "1"',
+        ])
+        command = LivyRunCode(code=init_code + '\n' + cluster_code)
         command.run(session)
 
         LOGGER.info('starting the callback server')
@@ -47,9 +47,8 @@ class LivyPrepareMaster(LivyCommand[str]):
             code='''
                 callback_server = CallbackServer()
                 callback_server.start()
-                return callback_server.url
+                _ = callback_server.url
             ''',
-            globals=['callback_server'],
         )
         _, url = command.run(session)
         url: str
@@ -108,13 +107,16 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
                 thread = InheritableThread(daemon=True, target=rdd.collect)
                 thread.start()
 
-                return callback_server.get_info(name).asdict()
+                info = callback_server.get_info(name)
+                if info:
+                    _ = info.asdict()
             ''',
             vars=dict(
                 kwargs=self.kwargs,
                 name=name,
             ),
-            globals=[fname],
         )
         _, kwargs = command.run(session)
+        if not kwargs:
+            raise TimeoutError('no info received from the worker')
         return WorkerInfo.fromdict(kwargs)

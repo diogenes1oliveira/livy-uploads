@@ -87,7 +87,10 @@ class TestWorkerHTTPServer:
         # Now send the signal for the second time
         client.send_signal(int(signal.SIGUSR1))
         time.sleep(0.5)
-        assert client.poll() == (b'finished\n', 42)
+        assert client.poll() == (b'finished\n', None)
+
+        time.sleep(0.5)
+        assert client.poll() == (b'', 42)
 
         # thread should take a while to die
         assert thread.is_alive()
@@ -145,7 +148,7 @@ class TestWorkerHTTPServer:
         # EOF marker to close the stdin
         client.write_stdin(b'')
         time.sleep(1.0)
-        assert client.poll()[0] == expected_md5.encode('utf8') + b'\n'
+        assert client.poll() == (expected_md5.encode('utf8') + b'\n', None)
 
         time.sleep(0.5)
         assert client.poll() == (b'', 0)

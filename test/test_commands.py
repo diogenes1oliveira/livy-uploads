@@ -44,7 +44,7 @@ class TestCommands:
             ),
             code='''
                 from datetime import timedelta
-                return now + timedelta(days=1)
+                _ = now + timedelta(days=1)
             ''',
         )
         lines, out = code_cmd.run(self.session)
@@ -70,7 +70,7 @@ class TestCommands:
         code_cmd = LivyRunCode(
             code='''
                 import socket
-                return socket.socket()
+                _ = socket.socket()
             ''',
         )
 
@@ -92,7 +92,7 @@ class TestCommands:
             chunk_size=len(data) // 4,
             progress_func=mock,
         )
-        _, actual_path = upload_cmd.run(self.session)
+        actual_path = upload_cmd.run(self.session)
         assert mock.call_count == 4
 
         test_cmd = LivyRunCode(
@@ -104,7 +104,7 @@ class TestCommands:
                 import os
                 import stat
 
-                return (
+                _ = (
                     os.getcwd(),
                     hashlib.md5(open(dest_path, 'rb').read()).hexdigest(),
                     oct(stat.S_IMODE(os.stat(dest_path).st_mode)),

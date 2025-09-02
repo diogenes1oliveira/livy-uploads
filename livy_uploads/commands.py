@@ -7,7 +7,7 @@ import shutil
 import textwrap
 from tempfile import TemporaryDirectory
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar, Tuple
+from typing import Any, Callable, Dict, List, Optional, TypeVar, Tuple
 from uuid import uuid4
 
 from livy_uploads.exceptions import LivyStatementError
@@ -19,71 +19,34 @@ T = TypeVar('T')
 
 
 class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
-    FUNC_PREFIX = 'livy_uploads_LivyRunCode_'
-
     '''
-    Executes the function code snippet in the remote Livy session.
+    Executes the code in the global namespace of the remote Livy session.
 
-    This will wrap the code in a function to avoid polluting the global namespace. If you do need
-    to assign global variables, use the `globals()` dict. Also, you can use the return statement to
-    get values back from the remote session.
+    Assigns the return value from the `_` variable.
     '''
 
-    def __init__(self, code: str, pause: float = 0.3, vars: Optional[Dict[str, Any]] = None, globals: Optional[List[str]] = None):
-        '''
-        Parameters:
-        - code: the Pyspark function code to execute. It will be dedented automatically.
-        - vars: variables to assign before the code. The values must be pickleable.
-        - globals: global variable names.
-        '''
+    def __init__(self, code: str, pause: float = 0.3, vars: Optional[Dict[str, Any]] = None):
         self.code = code
-        self.vars = vars or {}
-        self.globals = globals
         self.pause = pause
+        self.vars = vars or {}
 
-    def run(self, session: 'LivySession') -> Tuple[List[str], Any]:
-        '''
-        Returns:
-        - a tuple of the output lines and the return value of the code
-        '''
-        code = ''
+    def run(self, session: 'LivySession') -> Any:
+        var_lines = [
+            'import pickle',
+            'import base64',
+            '_ = None',
+        ]
 
-        code_name = self.FUNC_PREFIX + 'code'
-        run_name = self.FUNC_PREFIX + 'run'
+        for var_name, var_value in self.vars.items():
+            pickled_b64 = b64encode(pickle.dumps(var_value)).decode('ascii')
+            var_lines.append(f'{var_name} = pickle.loads(base64.b64decode({repr(pickled_b64)}))')
 
-        code += '\n' + f'def {code_name}():'
+        return_lines = [
+            "pickled_b64 = base64.b64encode(pickle.dumps(_)).decode('ascii')",
+            "print('\\nLivyUploads:pickled_b64', len(pickled_b64), pickled_b64, end='\\n')",
+        ]
 
-        if self.globals:
-            line = 'global ' + ', '.join(self.globals)
-            code += '\n    ' + line
-
-        if self.vars:
-            # inject the pickled variables
-            code += '\n' + textwrap.indent(textwrap.dedent('''
-                from base64 import b64decode
-                import pickle
-            '''), '    ')
-            for var_name, var_value in self.vars.items():
-                pickled_b64 = b64encode(pickle.dumps(var_value)).decode('ascii')
-                code += f'\n    {var_name} = pickle.loads(b64decode({repr(pickled_b64)}))'
-            code += '\n    del b64decode, pickle'
-
-        code += '\n' + textwrap.indent(textwrap.dedent(self.code), '    ')
-        code += f'\n' + textwrap.dedent(f'''
-            def {run_name}():
-                from base64 import b64encode
-                import pickle
-
-                value = {code_name}()
-
-                pickled_b64 = b64encode(pickle.dumps(value)).decode('ascii')
-                print('\\nLivyUploads:pickled_b64', len(pickled_b64), pickled_b64, end='\\n')
-
-            {run_name}()
-            del {run_name}, {code_name}
-        ''')
-
-        compile(code, 'source', mode='exec')  # no syntax errors
+        code = '\n'.join(var_lines) + '\n' + textwrap.dedent(self.code) + '\n' + '\n'.join(return_lines)
 
         r = session.request(
             'POST',
@@ -246,11 +209,12 @@ class LivyUploadFile(LivyCommand[str]):
                         with open(pyspark.SparkFiles.get(chunk_name), 'rb') as chunk_fp:
                             fp.write(chunk_fp.read())
 
-                return os.path.realpath(dest_path)
+                _ = os.path.realpath(dest_path)
             ''',
         )
 
-        return merge_cmd.run(session)
+        _, path = merge_cmd.run(session)
+        return path
 
 
 class LivyUploadDir(LivyCommand[str]):
@@ -322,11 +286,12 @@ class LivyUploadDir(LivyCommand[str]):
                     except FileNotFoundError:
                         pass
 
-                return os.path.realpath(dest_path)
+                _ = os.path.realpath(dest_path)
             ''',
         )
 
-        return extract_cmd.run(session)
+        _, path = extract_cmd.run(session)
+        return path
 
 
 class LivyRunShell(LivyCommand[Tuple[str, int]]):
@@ -375,7 +340,7 @@ class LivyRunShell(LivyCommand[Tuple[str, int]]):
                     except suprocess.TimeoutExpired:
                         proc.kill()
 
-                return proc.stdout.read(), proc.poll()
+                _ = proc.stdout.read(), proc.poll()
             ''',
         )
         _, (output, returncode) = code_cmd.run(session)

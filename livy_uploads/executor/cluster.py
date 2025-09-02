@@ -28,7 +28,7 @@ import threading
 import time
 from typing import Any, BinaryIO, Dict, Optional, List, Mapping, Callable, NamedTuple, Type, TypeVar, Union
 from urllib.parse import ParseResult, urlparse, parse_qs
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 
 T = TypeVar('T')
@@ -425,27 +425,32 @@ class WorkerClient:
         pause: Optional[float] = None,
         tty: Optional[bool] = None,
         stop_timeout: Optional[float] = None,
+        proxy: Optional[str] = None,
     ):
         self.url = url
         self.bufsize = bufsize
         self.pause = pause or 0.5
         self.stop_timeout = stop_timeout or 10.0
+        self.proxy = proxy
         self._stdout_offset = 0
         self._tty = tty
         self._signals_queue = queue.Queue()
 
+        handler = ProxyHandler({'http': self.proxy, 'https': self.proxy} if self.proxy else {})
+        self._opener = build_opener(handler)
+
     def poll(self) -> PollResult:
         data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
         self._stdout_offset += len(data)
+        returncode = None
 
         if len(data) == 0:
             time.sleep(self.pause)
             data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
             self._stdout_offset += len(data)
 
-            returncode = self.get_returncode()
-        else:
-            returncode = None
+            if len(data) == 0:
+                returncode = self.get_returncode()
 
         return PollResult(stdout=data, returncode=returncode)
 
@@ -534,12 +539,12 @@ class WorkerClient:
     def get_stdout(self, start: int = 0, size: Optional[int] = None) -> bytes:
         size = size or self.bufsize
         url = f'{self.url}/stdout?start={start}&size={size}'
-        with urlopen(url) as response:
+        with self._opener.open(url) as response:
             return response.read()
 
     def get_returncode(self) -> Optional[int]:
         url = f'{self.url}/poll'
-        with urlopen(url) as response:
+        with self._opener.open(url) as response:
             if response.status == 204:
                 return None
             else:
@@ -547,7 +552,7 @@ class WorkerClient:
 
     def get_info(self) -> WorkerInfo:
         url = f'{self.url}/info'
-        with urlopen(url) as response:
+        with self._opener.open(url) as response:
             body = _assert_type(json.loads(response.read().decode('utf-8')), dict)
             return WorkerInfo.fromdict(body)
 
@@ -556,13 +561,13 @@ class WorkerClient:
 
     def send_signal(self, signum: int) -> None:
         url = f'{self.url}/signal?signum={signum}'
-        with urlopen(url, data=b'') as response:
+        with self._opener.open(url, data=b'') as response:
             if response.status != 204:
                 raise IOError(f'Failed to send signal {signum} to {self.url}')
 
     def write_stdin(self, data: bytes) -> None:
         url = f'{self.url}/stdin'
-        with urlopen(url, data=data) as response:
+        with self._opener.open(url, data=data) as response:
             if response.status != 204:
                 raise IOError(f'Failed to write stdin to {self.url}')
 

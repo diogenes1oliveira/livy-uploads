@@ -36,6 +36,7 @@ class LivyExecutorClient:
         bufsize: Optional[int] = None,
         log_dir: Optional[str] = 'var/log',
         stop_timeout: Optional[float] = None,
+        proxy: Optional[str] = None,
     ):
         '''
         Args:
@@ -46,6 +47,7 @@ class LivyExecutorClient:
             log_dir: The directory to write the logs to. If not provided, uses a `var/log` directory.
             stop_timeout: The timeout to wait for the worker to stop.
             bufsize: The buffer size to use for reading the command output.
+            proxy: The proxy to use for polling the worker.
         '''
         self.session = session
         self.callback_port = callback_port or 0
@@ -55,6 +57,7 @@ class LivyExecutorClient:
         self.log_dir = log_dir or 'var/log'
         self.stop_timeout = stop_timeout or 10.0
         self.bufsize = bufsize or 4096
+        self.proxy = proxy or None
 
     def setup(self):
         callback_url = self.session.apply(LivyPrepareMaster())
@@ -103,4 +106,5 @@ class LivyExecutorClient:
             tty=tty,
             stop_timeout=self.stop_timeout,
             bufsize=self.bufsize,
+            proxy=self.proxy,
         )

@@ -101,6 +101,19 @@ services:
       - ./.dev/conf/spark:/etc/spark/conf
       - ./.dev/conf/livy:/etc/livy/conf
 
+  proxy:
+    depends_on:
+      - master
+    networks:
+      docker.internal:
+        aliases:
+          - proxy.docker.internal
+    image: vimagick/tinyproxy
+    mem_limit: 1g
+    cpus: 1
+    ports:
+      - "8090:8888"
+
   jupyter:
     depends_on:
       - master
