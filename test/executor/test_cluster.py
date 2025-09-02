@@ -1,28 +1,35 @@
 import base64
 import hashlib
+import io
 import re
 import logging
 import select
+import json
 import signal
 import secrets
 import subprocess
 import socket
 import threading
 import time
+import os
 from typing import Union
+from urllib.request import urlopen, Request
+from uuid import uuid4
+from pathlib import Path
 
 import pytest
 
-from livy_uploads.executor.cluster import WsWorker, get_free_port
+from livy_uploads.executor.cluster import WorkerServer, WorkerClient, CallbackServer, WorkerInfo, PollResult, get_free_port
 
 LOGGER = logging.getLogger(__name__)
 
 
-class TestWsWorker:
-    def test_happy_output(self, ws_server: str, sock_port: int, sock_server: socket.socket):
-        ws_worker = WsWorker(
-            master_port=sock_port,
-            ws_url=ws_server,
+class TestWorkerHTTPServer:
+    def test_happy_output(self, tmp_path: Path):
+        name = str(uuid4())
+        started = threading.Event()
+        worker = WorkerServer(
+            name=name,
             command='bash',
             args=[
                 '-c',
@@ -42,55 +49,57 @@ class TestWsWorker:
                     exit 42
                 '''
             ],
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            pause=0.5,
+            callback=lambda _: started.set(),
         )
-        thread = threading.Thread(daemon=True, target=ws_worker.run)
+        thread = threading.Thread(daemon=True, target=worker.run)
         thread.start()
 
-        sock, readline, writeline = self.accept(sock_server)
-        sock.settimeout(3)
-        assert thread.is_alive()
+        if not started.wait(timeout=5):
+            pytest.fail('worker did not start')
 
-        # First message is the worker sending its info
-        assert re.match(r'info hostname=.* pid=\d+', readline())
+        client = WorkerClient(worker.url)
 
-        # Client needs to send a heartbeat first
-        writeline('signal 0')
+        # check the info
+        info = client.get_info()
+        assert info.name == name
+        assert info.pid > 0
+        assert info.url == worker.url
 
         # First output line in the dummy script
-        assert readline() == 'stdout ' + b64dumps('started\n')
+        assert client.poll() == (b'started\n', None)
 
         # Should have nothing in the output for a while
-        rlist, _, _ = select.select([sock], [], [], 1)
-        assert not rlist
+        time.sleep(0.5)
+        assert client.poll() == (b'', None)
 
         # Now send the signal for the first time
-        writeline(f'signal {int(signal.SIGUSR1)}')
-        assert readline() == 'stdout ' + b64dumps('got signal SIGUSR1\n')
+        client.send_signal(int(signal.SIGUSR1))
+        time.sleep(0.5)
+        assert client.poll() == (b'got signal SIGUSR1\n', None)
 
         # Should have nothing in the output for a while
-        rlist, _, _ = select.select([sock], [], [], 1)
-        assert not rlist
+        time.sleep(0.5)
+        assert client.poll() == (b'', None)
 
         # Now send the signal for the second time
-        writeline(f'signal {int(signal.SIGUSR1)}')
-        assert readline() == 'stdout ' + b64dumps('finished\n')
+        client.send_signal(int(signal.SIGUSR1))
+        time.sleep(0.5)
+        assert client.poll() == (b'finished\n', 42)
 
-        # Now we should get the return code
-        assert readline() == 'returncode 42'
-
-        # thread should still be alive, we didn't send the ack yet
-        time.sleep(1)
+        # thread should take a while to die
         assert thread.is_alive()
-
-        # Do send the ack, should finish the thread
-        writeline('ack')
         thread.join(timeout=5)
         assert not thread.is_alive()
 
-    def test_happy_input(self, ws_server: str, sock_port: int, sock_server: socket.socket):
-        ws_worker = WsWorker(
-            master_port=sock_port,
-            ws_url=ws_server,
+
+    def test_happy_input(self, tmp_path: Path):
+        name = str(uuid4())
+        started = threading.Event()
+        worker = WorkerServer(
+            name=name,
             command='bash',
             args=[
                 '-c',
@@ -100,92 +109,138 @@ class TestWsWorker:
                     md5sum | awk '{print $1}'
                 ''',
             ],
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            pause=0.5,
+            callback=lambda _: started.set(),
         )
-        thread = threading.Thread(daemon=True, target=ws_worker.run)
+        thread = threading.Thread(daemon=True, target=worker.run)
         thread.start()
 
-        sock, readline, writeline = self.accept(sock_server)
-        sock.settimeout(3)
-        assert thread.is_alive()
+        if not started.wait(timeout=5):
+            pytest.fail('worker did not start')
 
-        # First message is the worker sending its info
-        assert re.match(r'info hostname=.* pid=\d+', readline())
+        client = WorkerClient(worker.url)
 
-        # Client needs to send a heartbeat first
-        writeline('signal 0')
+        # check the info
+        info = client.get_info()
+        assert info.name == name
+        assert info.pid > 0
+        assert info.url == worker.url
 
         # random single line
         line = secrets.token_urlsafe(64)
-        line = 'oi'
         expected_md5 = md5hex(line.encode('utf8'))
-        writeline('stdin ' + b64dumps(line + '\n'))
-        # time.sleep(5)
-        # return
-        assert readline() == 'stdout ' + b64dumps(expected_md5 + '\n')
+        client.write_stdin(line.encode('utf8') + b'\n')
+        time.sleep(0.5)
+        assert client.poll() == (expected_md5.encode('utf8') + b'\n', None)
 
         # long random binary input
         data = secrets.token_bytes(1024 * 1024)
         expected_md5 = md5hex(data)
-        writeline('stdin ' + b64dumps(data))
+        client.write_stdin(data)
+        time.sleep(0.5)
+        assert client.poll() == (b'', None)
 
         # EOF marker to close the stdin
-        writeline('stdin ' + b64dumps(''))
-        assert readline() == 'stdout ' + b64dumps(expected_md5 + '\n')
+        client.write_stdin(b'')
+        time.sleep(1.0)
+        assert client.poll()[0] == expected_md5.encode('utf8') + b'\n'
 
-        # Now we should get the return code
-        assert readline() == 'returncode 0'
+        time.sleep(0.5)
+        assert client.poll() == (b'', 0)
 
-        # thread should still be alive, we didn't send the ack yet
-        time.sleep(1)
+        # thread should take a while to die
         assert thread.is_alive()
-
-        # Do send the ack, should finish the thread
-        writeline('ack')
         thread.join(timeout=5)
         assert not thread.is_alive()
 
-    @pytest.fixture(scope='class')
-    def ws_server(self):
-        port = get_free_port()
-        url = f'wss://localhost:{port}'
-        process = subprocess.Popen(
-            ['wstunnel', '--log-lvl', 'WARN', 'server', '--remote-to-local-server-idle-timeout=5s', url],
-            stdin=subprocess.DEVNULL,
+    def test_happy_run(self, tmp_path: Path):
+        name = str(uuid4())
+        worker = WorkerServer(
+            name=name,
+            command='bash',
+            args=[
+                '-c',
+                'echo >&2 oi && exit 42',
+            ],
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            pause=0.5,
         )
+        worker.start()
+
+        client = WorkerClient(worker.url)
+        stdout = io.BytesIO()
+        returncode = client.run(stdin=open(os.devnull, 'rb'), stdout=stdout)
+        assert returncode == 42
+        assert stdout.getvalue() == b'oi\n'
+
+
+class TestCallbackServer:
+    @pytest.fixture
+    def server(self):
+        server = CallbackServer(
+            hostname='localhost',
+            port=0,
+            pause=0.1,
+            timeout=2.0,
+        )
+
+        server.start()
         try:
-            yield url
+            yield server
         finally:
-            process.kill()
-            process.wait(timeout=2)
+            server.close()
 
-    @pytest.fixture
-    def sock_port(self):
-        return get_free_port()
+    def test_happy_register(self, server: CallbackServer):
+        t0 = time.monotonic()
+        assert server.get_info('test') is None
+        assert time.monotonic() - t0 >= 2.0
 
-    @pytest.fixture
-    def sock_server(self, sock_port: int):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.settimeout(5.0)
-        server.bind(('localhost', sock_port))
-        server.listen(1)
-        return server
+        def register():
+            time.sleep(0.5)
+            info = WorkerInfo(
+                name='test',
+                pid=1234,
+                url=f'http://example.com:1234',
+            )
+            request = Request(
+                url=f'{server.url}/info',
+                method='POST',
+                data=json.dumps(info.asdict()).encode('utf8'),
+                headers={'Content-Type': 'application/json'},
+            )
+            with urlopen(request) as response:
+                pass
 
-    def accept(self, server: socket.socket):
-        sock, _ = server.accept()
-        rfile = sock.makefile(mode='r')
-        readline = lambda: rfile.readline().rstrip('\r\n')
-        def writeline(line: str):
-            data = (line.rstrip('\r\n') + '\n').encode('utf8')
-            LOGGER.debug('writeline %r', data if len(data) < 50 else data[:50] + b'...')
-            sock.sendall(data)
-        return sock, readline, writeline
+        thread = threading.Thread(daemon=True, target=register)
+        thread.start()
 
+        t0 = time.monotonic()
+        info = server.get_info('test')
+        dt = time.monotonic() - t0
+        assert info is not None
+        assert info.name == 'test'
+        assert 0.5 <= dt < 2.0
 
-def b64dumps(s: Union[str, bytes]) -> str:
-    if isinstance(s, str):
-        s = s.encode('utf8')
-    return base64.b64encode(s).decode('utf8')
+    def test_run_does_register(self, server: CallbackServer, tmp_path: Path):
+        worker = WorkerServer(
+            name='test2',
+            command='false',
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            pause=0.5,
+            callback=f'{server.url}/info',
+        )
+
+        assert server.get_info('test2') is None
+        worker.start()
+
+        info = server.get_info('test2')
+        assert info is not None
+        assert info.name == 'test2'
+        assert info.pid == worker._process.pid
 
 
 def md5hex(data: Union[str, bytes]) -> str:

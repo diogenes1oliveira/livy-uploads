@@ -2,45 +2,651 @@
 # -*- coding: utf-8 -*-
 
 '''
-This file contains all the necessary code for the cluster executor.
+Code to execute a command in a remote cluster worker.
 
-Make sure not to import any non-standard libraries here: the contents of this file will be
-sent as is to the cluster.
+This is module meant to be sent to a remote cluster and executed there, so don't import non-standard libraries.
 '''
 
-__all__ = ('WsWorker', 'get_free_port', 'ENV_DISABLE_MAIN')
+__all__ = ('WorkerServer', 'WorkerClient', 'CallbackServer', 'WorkerInfo', 'PollResult', 'get_free_port')
 
 import argparse
-from abc import ABC, abstractmethod
-from base64 import b64encode, b64decode
-from calendar import c
-from contextlib import closing
-import os
-import socket
+import collections.abc
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
 import logging
-import subprocess
-import shlex
-import shutil
-import select
-import traceback
-import re
-import time
-import threading
+import os
+from pathlib import Path
 import queue
-from typing import BinaryIO, ClassVar, Dict, List, Mapping, Optional, Tuple, Type, TypeVar, NamedTuple, Union, Set, TYPE_CHECKING
+import select
+import shlex
+import signal
+import socket
+from socketserver import ThreadingMixIn
+import subprocess
+import sys
+import threading
+import time
+from typing import Any, BinaryIO, Dict, Optional, List, Mapping, Callable, NamedTuple, Type, TypeVar, Union
+from urllib.parse import ParseResult, urlparse, parse_qs
+from urllib.request import Request, urlopen
 
-from urllib.parse import urlparse, urlunparse
 
+T = TypeVar('T')
 
-# name it explicitly because it will change when submitting directly to Livy
-LOGGER = logging.getLogger('livy_uploads.executor.worker')
-INPUT_LOGGER = LOGGER.getChild('input')
-OUTPUT_LOGGER = LOGGER.getChild('output')
+LOGGER = logging.getLogger('livy_uploads.executor.cluster')
 
 ENV_DISABLE_MAIN = 'LIVY_UPLOADS_EXECUTOR_DISABLE_MAIN'
 '''
 Environment variable to disable the main function even if the script is run directly.
 '''
+
+
+
+class WorkerInfo(NamedTuple):
+    """
+    Worker process information.
+    """
+    name: str
+    pid: int
+    url: str
+
+    @classmethod
+    def fromdict(cls, kwargs: Mapping) -> 'WorkerInfo':
+        return cls(
+            name=_assert_type(kwargs['name'], str),
+            pid=_assert_type(kwargs['pid'], int),
+            url=_assert_type(kwargs['url'], str),
+        )
+
+    def asdict(self) -> dict:
+        return dict(self._asdict())
+
+
+class PollResult(NamedTuple):
+    stdout: bytes
+    returncode: Optional[int]
+
+
+class BaseServer(ThreadingMixIn, HTTPServer):
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        RequestHandlerClass: Type[BaseHTTPRequestHandler],
+        port: Optional[int] = 0,
+        hostname: Optional[str] = None,
+        bind_address: Optional[str] = '0.0.0.0',
+    ):
+        super().__init__(
+            server_address=(bind_address or '0.0.0.0', port or 0),
+            RequestHandlerClass=RequestHandlerClass,
+            bind_and_activate=False,
+        )
+        self._hostname = hostname or None
+        self._serve_thread: Optional[threading.Thread] = None
+
+    @property
+    def hostname(self) -> str:
+        return self._hostname or socket.getfqdn()
+
+    @property
+    def url(self) -> str:
+        if not self.server_address:
+            raise RuntimeError('Server port is not set yet')
+
+        port = self.server_address[1]
+        return f'http://{self.hostname}:{port}'
+
+    def start(self) -> None:
+        # from the original constructor
+        LOGGER.info('binding server')
+        try:
+            self.server_bind()
+            self.server_activate()
+        except:
+            self.server_close()
+            raise
+
+        LOGGER.info('serving on %s', self.url)
+        thread = threading.Thread(daemon=True, target=self.serve_forever)
+        thread.start()
+        self._serve_thread = thread
+        time.sleep(1.0)
+
+    def close(self) -> None:
+        if self._serve_thread:
+            LOGGER.info('shutting down the server')
+            self.shutdown()
+            self._serve_thread.join(timeout=2.0)
+            self._serve_thread = None
+
+
+class BaseHandler(BaseHTTPRequestHandler):
+    """
+    Base class for HTTP handlers.
+    """
+
+    def send_entity(self, result: Optional[Union[str, bytes, Mapping]], status: Optional[int] = None) -> None:
+        if result is None:
+            status = status or 204
+            self.send_response(status)
+            self.end_headers()
+            return
+
+        status = status or 200
+        if isinstance(result, str):
+            data = result.encode('utf-8')
+            content_type = 'text/plain; charset=utf-8'
+        elif isinstance(result, bytes):
+            data = result
+            content_type = 'application/octet-stream'
+        elif isinstance(result, collections.abc.Mapping):
+            data = json.dumps(result).encode('utf-8')
+            content_type = 'application/json'
+        else:
+            raise TypeError(f'Invalid type for result: {type(result)}')
+
+        self.send_response(status)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Content-Type', content_type)
+        self.end_headers()
+        self.wfile.write(data)
+
+    @property
+    def url(self) -> ParseResult:
+        return urlparse(self.path)
+
+
+class WorkerServer(BaseServer):
+    """
+    Runs a process and serves the output over HTTP.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        command: str,
+        args: Optional[List[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        cwd: Optional[str] = None,
+        port: Optional[int] = 0,
+        bind_address: Optional[str] = '0.0.0.0',
+        hostname: Optional[str] = None,
+        pause: Optional[float] = None,
+        log_dir: Optional[str] = 'var/log',
+        callback: Optional[Union[str, Callable[[WorkerInfo], None]]] = None,
+        stdin: Optional[bool] = True,
+    ):
+        '''
+        Args:
+            name: The name of the worker. Used to identify the worker in the cluster and to set the output filenames.
+            command: The command to run.
+            args: The arguments to pass to the command.
+            env: Override environment variables for the command.
+            cwd: The working directory to run the command in. If the directory does not exist, it will be created.
+            port: The port to listen on. If 0, a free port will be chosen.
+            bind_address: The address to bind to. If not provided, defaults to `0.0.0.0`.
+            hostname: The advertised hostname. If not provided, the FQDN will be used.
+            bufsize: The buffer size to use for reading the command output.
+            pause: The pause time to wait for data in the command output.
+            log_dir: The directory to write the logs to. If not provided, uses a `var/log` directory.
+            pause: Small pause to wait for data consistency.
+            callback: An optional callback to call when the worker starts. Might be a URL to POST the info to or a callable.
+            stdin: Whether to enable stdin in the process.
+        '''
+        super().__init__(
+            RequestHandlerClass=WorkerHandler,
+            port=port,
+            bind_address=bind_address,
+            hostname=hostname,
+        )
+
+        self.name = name
+        self.command = command
+        self.args = list(args or [])
+        self.env = {**os.environ, **(env or {})}
+        self.cwd = Path(cwd or '.')
+        self.pause = pause or 1.0
+        self.log_file = Path(log_dir or 'var/log') / f'{name}.log'
+        self.callback = callback
+        self.stdin = stdin if stdin is not None else True
+        self._process: Optional[subprocess.Popen] = None
+        self._server_is_open = False
+        self._fp: Optional[BinaryIO] = None
+        self._done = threading.Event()
+        self._stdin_lock = threading.Lock()
+
+    @property
+    def info(self) -> WorkerInfo:
+        if not self._process:
+            raise RuntimeError('Process is not running')
+
+        return WorkerInfo(
+            name=self.name,
+            pid=self._process.pid,
+            url=self.url,
+        )
+
+    def start(self) -> None:
+        """
+        Starts the server and the process.
+        """
+
+        super().start()
+
+        LOGGER.info('preparing the files and directories')
+        try:
+            self.log_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        self.log_file.absolute().parent.mkdir(parents=True, exist_ok=True)
+        self.log_file.touch(mode=0o600)
+        self.cwd.absolute().mkdir(parents=True, exist_ok=True)
+        self._fp = open(self.log_file, 'wb')
+
+        LOGGER.info('starting the process')
+        self._process = subprocess.Popen(
+            [*shlex.split(self.command), *self.args],
+            env=self.env,
+            cwd=self.cwd,
+            stdin=subprocess.PIPE if self.stdin else subprocess.DEVNULL,
+            stdout=self._fp,
+            stderr=self._fp,
+        )
+
+        try:
+            info = self.info
+            LOGGER.info('started worker: %s', info)
+            if self.callback:
+                if callable(self.callback):
+                    self.callback(info)
+                elif isinstance(self.callback, str):
+                    request = Request(self.callback, data=json.dumps(info.asdict()).encode('utf-8'))
+                    request.add_header('Content-Type', 'application/json')
+                    with urlopen(request) as response:
+                        if response.status != 204:
+                            raise IOError(f'Failed to send callback to {self.callback}')
+                else:
+                    raise ValueError(f'Invalid callback: {self.callback}')
+        except Exception:
+            self._kill()
+            raise
+
+        LOGGER.info('worker started with server running on %s', self.url)
+
+    def close(self) -> None:
+        """
+        Closes the server and the process.
+        """
+
+        if self._process:
+            LOGGER.info('killing the process')
+            self._kill()
+
+        if self._fp:
+            LOGGER.info('removing the log file')
+            self._fp.close()
+            try:
+                self.log_file.unlink()
+            except FileNotFoundError:
+                pass
+
+        super().close()
+
+    def wait(self) -> None:
+        """
+        Waits until the process is done and its returncode is polled.
+        """
+        LOGGER.info('waiting for returncode to be polled')
+        self._done.wait()
+        LOGGER.info('returncode was polled')
+
+    def run(self) -> int:
+        """
+        Starts the server and the process and waits until the process is done and its returncode is polled.
+        """
+        self.start()
+        try:
+            self.wait()
+            returncode = self._process.returncode
+            if returncode is None:
+                raise RuntimeError('Process did not finish')
+            return returncode
+        finally:
+            self.close()
+
+    def _kill(self) -> None:
+        if self._process:
+            self._process.kill()
+            self._process.wait(self.pause)
+
+    def get_stdout(self, start: int = 0, size: int = 1024) -> bytes:
+        with self.log_file.open('rb') as fp:
+            fp.seek(start)
+            data = fp.read(size)
+            log_data = data if len(data) < 50 else data[:50] + b'...'
+            LOGGER.debug('read %d bytes from stdout: %s', len(data), log_data)
+            return data
+
+    def get_returncode(self) -> Optional[int]:
+        if not self._process:
+            raise IOError('Process is not running')
+        returncode =  self._process.poll()
+        if returncode is not None:
+            LOGGER.info('process %d finished with returncode %d', self._process.pid, returncode)
+            def delayed_done():
+                time.sleep(self.pause)
+                self._done.set()
+            threading.Thread(daemon=True, target=delayed_done).start()
+        return returncode
+
+    def send_signal(self, signum: int) -> None:
+        if not self._process:
+            raise IOError('Process is not running')
+        LOGGER.info('sending signal %d to process %d', signum, self._process.pid)
+        self._process.send_signal(signum)
+
+    def write_stdin(self, data: bytes) -> None:
+        if not self._process:
+            raise IOError('Process is not running')
+
+        with self._stdin_lock:
+            if data:
+                log_data = data if len(data) < 50 else data[:50] + b'...'
+                LOGGER.debug('writing %d bytes to stdin: %s', len(data), log_data)
+                self._process.stdin.write(data)
+                self._process.stdin.flush()
+            else:
+                LOGGER.info('closing stdin')
+                self._process.stdin.close()
+
+
+class WorkerHandler(BaseHandler):
+    """
+    Handles HTTP requests for a worker.
+
+    The routes are:
+
+    - `GET /ping`: Gets a 200 OK pong response.
+    - `GET /stdout?start=<offset>&size=<bytes>`: Gets stdout binary data in the body of the response.
+    - `GET /poll`: Gets the returncode of the worker.
+    - `GET /info`: Gets the info of the worker.
+    - `POST /signal?signum=<signal>`: Sends a signal to the worker.
+    - `POST /stdin`: Writes te body as binary data to the stdin of the worker.
+    """
+
+    server: WorkerServer
+
+    def do_GET(self) -> None:
+        if self.url.path == '/ping':
+            self.send_entity('pong')
+        elif self.url.path == '/stdout':
+            qs = parse_qs(self.url.query)
+            start = int((qs.get('start') or ['0'])[0])
+            size = int((qs.get('size') or ['4096'])[0])
+            data = self.server.get_stdout(start, size)
+            self.send_entity(data)
+        elif self.url.path == '/poll':
+            returncode = self.server.get_returncode()
+            if returncode is not None:
+                body = str(returncode)
+            else:
+                body = None
+            self.send_entity(body)
+        elif self.url.path == '/info':
+            self.send_entity(self.server.info.asdict())
+        else:
+            self.send_error(404)
+
+    def do_POST(self) -> None:
+        if self.url.path == '/signal':
+            qs = parse_qs(self.url.query)
+            signum = int((qs.get('signum') or ['0'])[0])
+            self.server.send_signal(signum)
+            self.send_entity(None)
+        elif self.url.path == '/stdin':
+            data = self.rfile.read(int(self.headers['Content-Length']))
+            self.server.write_stdin(data)
+            self.send_entity(None)
+        else:
+            self.send_error(404)
+
+
+class WorkerClient:
+    """
+    A client for polling the status of the worker.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        bufsize: int = 4096,
+        pause: Optional[float] = None,
+        tty: Optional[bool] = None,
+        stop_timeout: Optional[float] = None,
+    ):
+        self.url = url
+        self.bufsize = bufsize
+        self.pause = pause or 0.5
+        self.stop_timeout = stop_timeout or 10.0
+        self._stdout_offset = 0
+        self._tty = tty
+        self._signals_queue = queue.Queue()
+
+    def poll(self) -> PollResult:
+        data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
+        self._stdout_offset += len(data)
+
+        if len(data) == 0:
+            time.sleep(self.pause)
+            data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
+            self._stdout_offset += len(data)
+
+            returncode = self.get_returncode()
+        else:
+            returncode = None
+
+        return PollResult(stdout=data, returncode=returncode)
+
+    def run(
+        self,
+        stdin: Optional[BinaryIO] = None,
+        stdout: Optional[BinaryIO] = None,
+    ) -> int:
+        stdin = stdin or sys.stdin.buffer
+        stdout = stdout or sys.stdout.buffer
+
+        r, w = os.pipe()
+        done = threading.Event()
+        stdin_thread = threading.Thread(daemon=True, target=self._read_stdin, args=(stdin, r))
+        stdin_thread.start()
+
+        signals_thread = threading.Thread(daemon=True, target=self._send_signals, args=(done,))
+        signals_thread.start()
+
+        try:
+            while True:
+                try:
+                    result = self.poll()
+                    stdout.write(result.stdout)
+                    stdout.flush()
+
+                    if result.returncode is not None:
+                        LOGGER.info('process finished with returncode %d', result.returncode)
+                        return result.returncode
+
+                    if len(result.stdout) < self.bufsize:
+                        time.sleep(self.pause)
+                except KeyboardInterrupt:
+                    LOGGER.info('received KeyboardInterrupt')
+                    self.send_signal(int(signal.SIGINT))
+        finally:
+            done.set()
+            if stdin_thread.is_alive():
+                LOGGER.info('waiting for the stdin thread to finish')
+                os.close(w)
+                stdin_thread.join(timeout=self.stop_timeout)
+                if stdin_thread.is_alive():
+                    raise TimeoutError('stdin thread did not finish in time')
+
+    def _send_signals(self, done: threading.Event) -> None:
+        try:
+            while not done.is_set():
+                try:
+                    signum, t = self._signals_queue.get(timeout=1.0)
+                    LOGGER.info('forwarding signal %d to process (dt=%f)', signum, time.monotonic() - t)
+                except queue.Empty:
+                    continue
+                self.send_signal(signum)
+        except:
+            LOGGER.exception('error in _send_signals')
+
+    def _read_stdin(self, stdin: BinaryIO, stop_fd: int):
+        try:
+            if self._tty is None:
+                tty = stdin.isatty()
+            else:
+                tty = self._tty
+
+            while True:
+                readables, _, _ = select.select([stdin, stop_fd], [], [], 1.0)
+                if not readables:
+                    continue
+
+                if stop_fd in readables:
+                    LOGGER.warning('requested to exit before EOF')
+                    os.read(stop_fd, 1)
+                    break
+
+                if tty:
+                    data = stdin.readline()
+                else:
+                    data = stdin.read(self.bufsize)
+
+                self.write_stdin(data)
+                if not data:
+                    LOGGER.info('EOF in stdin')
+                    break
+        except:
+            LOGGER.exception('error in _read_stdin')
+
+    def get_stdout(self, start: int = 0, size: Optional[int] = None) -> bytes:
+        size = size or self.bufsize
+        url = f'{self.url}/stdout?start={start}&size={size}'
+        with urlopen(url) as response:
+            return response.read()
+
+    def get_returncode(self) -> Optional[int]:
+        url = f'{self.url}/poll'
+        with urlopen(url) as response:
+            if response.status == 204:
+                return None
+            else:
+                return int(response.read().decode('utf-8'))
+
+    def get_info(self) -> WorkerInfo:
+        url = f'{self.url}/info'
+        with urlopen(url) as response:
+            body = _assert_type(json.loads(response.read().decode('utf-8')), dict)
+            return WorkerInfo.fromdict(body)
+
+    def enqueue_signal(self, signum: int) -> None:
+        self._signals_queue.put((signum, time.monotonic()))
+
+    def send_signal(self, signum: int) -> None:
+        url = f'{self.url}/signal?signum={signum}'
+        with urlopen(url, data=b'') as response:
+            if response.status != 204:
+                raise IOError(f'Failed to send signal {signum} to {self.url}')
+
+    def write_stdin(self, data: bytes) -> None:
+        url = f'{self.url}/stdin'
+        with urlopen(url, data=data) as response:
+            if response.status != 204:
+                raise IOError(f'Failed to write stdin to {self.url}')
+
+
+class CallbackServer(BaseServer):
+    """
+    A server to receive callbacks from dynamically created workers.
+    """
+
+    def __init__(
+        self,
+        port: Optional[int] = 0,
+        bind_address: Optional[str] = '0.0.0.0',
+        hostname: Optional[str] = None,
+        pause: Optional[float] = None,
+        timeout: Optional[float] = None,
+    ):
+        '''
+        Args:
+            port: The port to listen on. If 0, a free port will be chosen.
+            bind_address: The address to bind to. If not provided, defaults to `0.0.0.0`.
+            hostname: The advertised hostname. If not provided, the FQDN will be used.
+            pause: The pause time to wait between polling the worker info.
+            timeout: The timeout to wait for the worker to be ready.
+        '''
+        super().__init__(
+            RequestHandlerClass=CallbackHandler,
+            port=port,
+            bind_address=bind_address,
+            hostname=hostname,
+        )
+        self.infos: Dict[str, WorkerInfo] = {}
+        self.pause = pause or 0.3
+        self.timeout = timeout or 10.0
+
+    def handle_info(self, info: WorkerInfo) -> None:
+        LOGGER.info('received callback info from %s: %s', info.name, info)
+        self.infos[info.name] = info
+
+    def get_info(self, name: str) -> Optional[WorkerInfo]:
+        t0 = time.time()
+        while True:
+            if time.time() - t0 > self.timeout:
+                return None
+            info = self.infos.get(name)
+            if info:
+                return info
+            time.sleep(self.pause)
+
+
+class CallbackHandler(BaseHandler):
+    """
+    Handles HTTP requests for a callback server.
+
+    Routes:
+    - `POST /info`: Receives the info from the worker.
+    - `GET /ping`: Gets a 200 OK pong response.
+    - `GET /info/<name>`: Gets the info of the worker.
+    """
+
+    server: CallbackServer
+
+    def do_GET(self) -> None:
+        if self.url.path == '/ping':
+            self.send_entity('pong')
+        elif self.url.path.startswith('/info/'):
+            name = self.url.path[len('/info/'):]
+            info = self.server.infos.get(name)
+            if info:
+                self.send_entity(info.asdict())
+            else:
+                self.send_entity({'error': f'Worker {name} not found'}, status=404)
+        else:
+            self.send_error(404)
+
+    def do_POST(self) -> None:
+        if self.url.path == '/info':
+            data = self.rfile.read(int(self.headers['Content-Length']))
+            body = _assert_type(json.loads(data), dict)
+            info = WorkerInfo.fromdict(body)
+            self.server.handle_info(info)
+            self.send_entity(None)
+        else:
+            self.send_error(404)
 
 
 def get_free_port() -> int:
@@ -53,606 +659,31 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
-T = TypeVar('T', bound='Message')
+def _assert_type(value: Any, expected_type: Type[T]) -> T:
+    if not isinstance(value, expected_type):
+        raise ValueError(f'Expected {expected_type}, got {type(value)}')
+    return value
 
-class Message(ABC):
-    TYPE: ClassVar[str]
 
-    @classmethod
-    @abstractmethod
-    def parse(cls: Type[T], payload: bytes) -> T:
-        '''
-        Parses a message payload.
-
-        Raises:
-            ValueError: If the message is invalid.
-        '''
-        raise NotImplementedError
-
-    def process(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
-        '''
-        Processes this input message sent by the client.
-
-        Meant to be run in the worker.
-
-        Raises:
-            NotImplementedError: If the message can't be processed by a worker.
-        '''
-        raise NotImplementedError
-
-    def handle(self, protocol: 'WsProtocol'):
-        '''
-        Handles this output message sent by the worker.
-
-        Meant to be run in the client.
-
-        Raises:
-            NotImplementedError: If the message can't be handled by a client.
-        '''
-        raise NotImplementedError
-
-    @abstractmethod
-    def encode(self) -> str:
-        '''
-        Encodes the payload of the message.
-        '''
-        raise NotImplementedError
-
-
-class StdinMessage(Message):
-    TYPE: ClassVar[str] = 'stdin'
-
-    def __init__(self, data: bytes):
-        self.data = data
-
-    @property
-    def eof(self) -> bool:
-        return not self.data
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'StdinMessage':
-        return cls(data=b64decode(payload.encode('utf8')))
-
-    def process(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
-        if INPUT_LOGGER.isEnabledFor(logging.DEBUG):
-            if len(self.data) > 50:
-                log_data = self.data[:50] + b'...'
-            else:
-                log_data = self.data
-            INPUT_LOGGER.debug('got %d bytes of stdin data: %r', len(self.data), log_data)
-
-        if proc.poll() is not None:
-            INPUT_LOGGER.warning("can't write to stdin because the command has finished already")
-        elif protocol.stdin_closed.is_set():
-            INPUT_LOGGER.warning("can't write to stdin because it has been closed already")
-        elif self.eof:
-            INPUT_LOGGER.info('Closing stdin')
-            protocol.stdin_closed.set()
-            proc.stdin.close()
-        else:
-            proc.stdin.write(self.data)
-            proc.stdin.flush()
-
-    def encode(self) -> str:
-        return b64encode(self.data).decode("utf8")
-
-
-class AckMessage(Message):
-    TYPE: ClassVar[str] = 'ack'
-
-    def __init__(self):
-        pass
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'AckMessage':
-        if payload:
-            raise ValueError('Ack message does not expect any data')
-        return cls()
-
-    def process(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
-        if proc.poll() is None:
-            INPUT_LOGGER.warning('Ignoring ack before the command has finished')
-            return
-
-        INPUT_LOGGER.info('Received ack')
-        protocol.acked.set()
-
-    def encode(self) -> str:
-        return ''
-
-
-class SignalMessage(Message):
-    TYPE: ClassVar[str] = 'signal'
-
-    def __init__(self, signum: int):
-        self.signum = signum
-
-    @property
-    def heartbeat(self) -> bool:
-        '''
-        Whether this is a heartbeat signal.
-        '''
-        return self.signum == 0
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'SignalMessage':
-        signum = int(payload)
-        return cls(signum=signum)
-
-    def process(self, proc: subprocess.Popen, protocol: 'WsProtocol'):
-        '''
-        Sends the requested signal to the command or sends a heartbeat.
-        '''
-        if self.heartbeat:
-            INPUT_LOGGER.info('Heartbeat received')
-            protocol.last_heartbeat = time.monotonic()
-        elif proc.poll() is not None:
-            INPUT_LOGGER.warning("can't send signal %s because the command has finished already", self.signum)
-        else:
-            INPUT_LOGGER.info('Sending signal %s', self.signum)
-            proc.send_signal(self.signum)
-
-    def encode(self) -> str:
-        return str(self.signum)
-
-
-class StdoutMessage(Message):
-    TYPE: ClassVar[str] = 'stdout'
-
-    def __init__(self, data: bytes):
-        self.data = data
-
-    @property
-    def eof(self) -> bool:
-        return not self.data
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'StdoutMessage':
-        return cls(data=b64decode(payload.encode('utf8')))
-
-    def encode(self) -> str:
-        return b64encode(self.data).decode("utf8")
-
-    @classmethod
-    def generate(cls, proc: subprocess.Popen, protocol: 'WsProtocol') -> Optional['StdoutMessage']:
-        '''
-        Tries to generate a message from the stdout of the command.
-
-        Returns:
-            The message, or None if there is no data available to send.
-        '''
-        OUTPUT_LOGGER.debug('checking for data in stdout')
-        ready, _, _ = select.select([proc.stdout], [], [], protocol.pause)
-        if not ready:
-            if proc.poll() is not None:
-                OUTPUT_LOGGER.info('Command has finished and stdout is done')
-            else:
-                OUTPUT_LOGGER.debug('no data in stdout yet')
-            return None
-
-        OUTPUT_LOGGER.debug('stdout is ready, now reading %d bytes', protocol.bufsize)
-        data = proc.stdout.read(protocol.bufsize)
-        OUTPUT_LOGGER.debug('read %d bytes from stdout: %r', len(data or b''), data)
-        if data is None:
-            OUTPUT_LOGGER.debug('no data in stdout yet')
-            return None
-        elif not data:
-            OUTPUT_LOGGER.info('Command stdout is done')
-
-        return cls(data=data)
-
-
-_info_pattern = re.compile(r'hostname=([^\s]+) pid=(\d+)')
-
-
-class InfoMessage(Message):
-    TYPE: ClassVar[str] = 'info'
-
-    def __init__(self, hostname: str, pid: int):
-        self.hostname = hostname
-        self.pid = pid
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'InfoMessage':
-        match = _info_pattern.match(payload.decode('utf8'))
-        if not match:
-            raise ValueError('Invalid info message')
-        return cls(hostname=match.group(1), pid=int(match.group(2)))
-
-    def encode(self) -> str:
-        return f'hostname={self.hostname} pid={self.pid}'
-
-    @classmethod
-    def generate(cls, proc: subprocess.Popen) -> 'InfoMessage':
-        '''
-        Generates a message with the hostname and pid of the command.
-        '''
-        return cls(hostname=socket.getfqdn(), pid=proc.pid)
-
-
-class ReturncodeMessage(Message):
-    TYPE: ClassVar[str] = 'returncode'
-
-    def __init__(self, returncode: int):
-        self.returncode = returncode
-
-    @classmethod
-    def parse(cls, payload: bytes) -> 'ReturncodeMessage':
-        return cls(returncode=int(payload.decode('utf8')))
-
-    def encode(self) -> str:
-        return str(self.returncode)
-
-    @classmethod
-    def generate(cls, proc: subprocess.Popen) -> 'ReturncodeMessage':
-        '''
-        Waits for the command to finish to generate a message with the returncode.
-        '''
-        returncode = proc.poll()
-        if returncode is None:
-            raise RuntimeError('Returncode not set yet')
-
-        OUTPUT_LOGGER.info('command has finished with returncode %s', returncode)
-        return cls(returncode=returncode)
-
-
-class WsProtocol:
-    TYPES: ClassVar[Dict[str, Type[Message]]] = {
-        StdinMessage.TYPE: StdinMessage,
-        SignalMessage.TYPE: SignalMessage,
-        AckMessage.TYPE: AckMessage,
-        InfoMessage.TYPE: InfoMessage,
-        StdoutMessage.TYPE: StdoutMessage,
-        ReturncodeMessage.TYPE: ReturncodeMessage,
-    }
-
-    def __init__(self, bufsize: int = 1024, pause: float = 1.0):
-        self.bufsize = bufsize
-        self.pause = pause
-        self.last_heartbeat: float = -1.0
-        self.acked = threading.Event()
-        self.stdin_closed = threading.Event()
-        self.returncode: Optional[int] = None
-
-    def parse(self, line: Union[bytes, str]) -> Message:
-        if isinstance(line, bytes):
-            line = line.decode('utf8')
-
-        prefix, _, payload = line.rstrip('\r\n').partition(' ')
-        try:
-            cls: Type[Message] = self.TYPES[prefix]
-        except KeyError:
-            raise ValueError('Unknown prefix: %r', prefix)
-
-        return cls.parse(payload)
-
-    def process(self, line: Union[bytes, str], proc: subprocess.Popen):
-        '''
-        Parses and processes an input line sent by the client.
-
-        Meant to be run in the worker.
-        '''
-        try:
-            message = self.parse(line)
-        except ValueError:
-            INPUT_LOGGER.warning('bad input data', exc_info=True)
-            return
-
-        try:
-            message.process(proc, self)
-        except NotImplementedError:
-            INPUT_LOGGER.warning('Command %s not supported for workers', message.__class__.__name__)
-
-    def handle(self, line: Union[bytes, str]):
-        '''
-        Parses and processes an output line sent by worker.
-
-        Meant to be run in the client.
-        '''
-        try:
-            message = self.parse(line)
-        except ValueError:
-            OUTPUT_LOGGER.warning('bad output data', exc_info=True)
-            return
-
-        try:
-            message.handle(self)
-        except NotImplementedError:
-            OUTPUT_LOGGER.warning('Command %s not supported for clients', message.__class__.__name__)
-
-    def send(self, wfile: BinaryIO, message: Message):
-        '''
-        Encodes and sends a message through the file channel.
-        '''
-        line = message.TYPE
-        payload = message.encode()
-        if payload:
-            line += ' ' + payload
-
-        wfile.write(line.encode('utf8'))
-        wfile.write(b'\n')
-        wfile.flush()
-
-
-class WsWorker:
-    def __init__(
-        self,
-        master_port: int,
-        command: str,
-        ws_url: Optional[str] = None,
-        args: Optional[List[str]] = None,
-        env: Optional[Mapping[str, str]] = None,
-        cwd: Optional[str] = None,
-        ws_bin: Optional[str] = None,
-        ws_args: Optional[List[str]] = None,
-        bufsize: int = 1024,
-        pause: float = 1.0,
-        heartbeat_timeout: float = 10.0,
-        kill_timeout: float = 5.0,
-    ):
-        '''
-        Args:
-            master_port: The port on the master to connect stdin and stdout to.
-            command: The command to run.
-            args: The arguments to pass to the command.
-            env: Override environment variables for the command.
-            cwd: The working directory to run the command in. If the directory does not exist, it will be created.
-            ws_url: The URL of the master WebSocket server. Defaults to wss://localhost:12345/v1
-            ws_bin: The path to the wstunnel binary.
-            ws_args: Extra shell arguments to pass to the wstunnel binary.
-            bufsize: The buffer size to use for reading the command output.
-            pause: The pause time to wait for data in the command output.
-            heartbeat_timeout: The timeout to wait for the heartbeats to be received.
-            kill_timeout: The timeout to wait for the command to finish.
-        '''
-        url = urlparse(ws_url or 'wss://localhost:12345/v1')
-        path = url.path.lstrip('/') or 'v1'
-        url = url._replace(path='', query=None, fragment=None)
-        self.ws_url = urlunparse(url)
-        self.master_port = master_port
-        self.command = command
-        self.args = list(args or []) + ['--http-upgrade-path-prefix', path]
-        self.env = env or {}
-        self.cwd = cwd or None
-        self.ws_bin = ws_bin or shutil.which('wstunnel') or '/usr/bin/wstunnel'
-        self.ws_args = list(ws_args or [])
-        self.bufsize = bufsize
-        self.pause = pause
-        self.heartbeat_timeout = heartbeat_timeout
-        self.kill_timeout = kill_timeout
-
-    @property
-    def worker_address(self) -> Tuple[str, int]:
-        url = urlparse(self.ws_url)
-        return url.hostname, self.master_port
-
-    def run(self) -> int:
-        LOGGER.info('preparing the wstunnel binary')
-        try:
-            os.makedirs('bin')
-        except FileExistsError:
-            pass
-
-        ws_exe = os.path.abspath('bin/wstunnel')
-        if os.path.exists(ws_exe):
-            LOGGER.info('checking already copied wstunnel binary')
-            process = subprocess.run(
-                [ws_exe, '--version'],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if process.returncode != 0:
-                LOGGER.warning('wstunnel binary is not working, removing it')
-                os.unlink(ws_exe)
-
-        if not os.path.exists(ws_exe):
-            LOGGER.info('copying wstunnel binary to %r', ws_exe)
-            shutil.copy(self.ws_bin, ws_exe)
-            os.chmod(ws_exe, 0o755)
-
-        LOGGER.info('starting the wstunnel client connected to server at %r', self.ws_url)
-        ws_log_level = 'INFO' if LOGGER.isEnabledFor(logging.DEBUG) else 'WARN'
-        ws_proc = subprocess.Popen(
-            [ws_exe, '--log-lvl', ws_log_level, 'client', '-L', f'stdio://localhost:{self.master_port}', *self.ws_args, self.ws_url],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-
-        LOGGER.info('starting the command %r', self.command)
-
-        env = {**os.environ, **self.env}
-        if self.cwd is not None:
-            os.makedirs(self.cwd, exist_ok=True)
-        cmd_proc = subprocess.Popen(
-            [*shlex.split(self.command), *self.args],
-            env=env,
-            cwd=self.cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        LOGGER.info('command started with pid %s', cmd_proc.pid)
-
-        protocol = WsProtocol()
-        thread = threading.Thread(
-            daemon=True,
-            target=self._receive_input,
-            kwargs=dict(
-                rfile=ws_proc.stdout,
-                proc=cmd_proc,
-                protocol=protocol,
-            ),
-        )
-        thread.start()
-
-        try:
-            self._send_output(
-                proc=cmd_proc,
-                wfile=ws_proc.stdin,
-                protocol=protocol,
-            )
-        finally:
-            if not protocol.acked.wait(timeout=self.kill_timeout):
-                ws_proc.kill()
-                ws_proc.wait(timeout=self.pause)
-
-            thread.join(timeout=self.pause)
-
-        if thread.is_alive():
-            raise RuntimeError('Command input polling thread did not finish')
-
-        if cmd_proc.poll() is None:
-            raise RuntimeError('Command did not finish yet')
-
-        return cmd_proc.returncode
-
-    def _receive_input(self, rfile: BinaryIO, proc: subprocess.Popen, protocol: WsProtocol):
-        '''
-        Receives input from the master and writes it to the subprocess stdin
-        '''
-        logger = LOGGER.getChild('input')
-        logger.info('polling the command input')
-
-        try:
-            while not protocol.acked.is_set():
-                logger.debug('waiting next input line')
-                data = rfile.readline()
-
-                if not data:
-                    logger.info('input channel is closed, quitting input loop')
-                    break
-
-                protocol.process(data, proc)
-        except Exception:
-            logger.exception('Command input polling failed')
-            if proc.poll() is not None:
-                proc.terminate()
-        finally:
-            logger.info('stdin polling done')
-
-    def _send_output(self, proc: subprocess.Popen, wfile: BinaryIO, protocol: WsProtocol):
-        '''
-        Polls and sends the output and returncode of a subprocess
-        '''
-        logger = LOGGER.getChild('output')
-        os.set_blocking(proc.stdout.fileno(), False)
-
-        try:
-            logger.info('sending host info')
-            protocol.send(wfile, InfoMessage.generate(proc))
-
-            logger.info('waiting for the first heartbeat')
-            t0 = time.monotonic()
-            while protocol.last_heartbeat < 0:
-                if time.monotonic() - t0 > self.heartbeat_timeout:
-                    raise RuntimeError("didn't get an initial heartbeat in time")
-                time.sleep(self.pause)
-
-            logger.info('polling the command output')
-            while True:
-                logger.debug('checking the heartbeats')
-                if time.monotonic() - protocol.last_heartbeat > self.heartbeat_timeout:
-                    raise RuntimeError('Heartbeat timeout')
-
-                stdout_message = StdoutMessage.generate(proc, protocol)
-                if stdout_message is not None:
-                    if stdout_message.eof:
-                        logger.info('command stdout is done')
-                        break
-                    protocol.send(wfile, stdout_message)
-                elif proc.poll() is not None:
-                    logger.info('command has finished and there is no more output to send')
-                    break
-
-            logger.info('Output polling done, waiting for returncode')
-            protocol.send(wfile, ReturncodeMessage.generate(proc))
-
-            logger.info('waiting for the ack')
-            protocol.acked.wait(timeout=self.kill_timeout)
-            if not protocol.acked.is_set():
-                raise RuntimeError('Not acked in time')
-
-        except Exception:
-            logger.exception('command output loop failed')
-            proc.kill()
-            protocol.send(wfile, ReturncodeMessage(1))
-        finally:
-            logger.info('output polling is finished')
-
-
-class WsClient:
-    def __init__(
-        self,
-        worker_address: Tuple[str, int],
-    ):
-        pass
-
-
-    def run(self):
-        OUTPUT_LOGGER.info('connecting to the worker at %r', self.worker_address)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        protocol = WsProtocol()
-        sock.connect(self.worker_address)
-        with closing(sock):
-            wfile = sock.makefile(mode='wb')
-
-            OUTPUT_LOGGER.info('sending initial heartbeat')
-            protocol.send(wfile, SignalMessage(0))
-
-    def _receive_output(self, rfile: BinaryIO, protocol: WsProtocol):
-        OUTPUT_LOGGER.info('receiving output from the worker')
-
-        try:
-            while True:
-                OUTPUT_LOGGER.debug('waiting for output data')
-                ready, _, _ = select.select([rfile], [], [], protocol.pause)
-                if not ready:
-                    OUTPUT_LOGGER.debug('no output data yet')
-                    continue
-
-                line = rfile.readline()
-                if not line:
-                    OUTPUT_LOGGER.info('output channel is closed, quitting output loop')
-                    break
-                protocol.process(line, protocol)
-            OUTPUT_LOGGER.info('sending initial heartbeat')
-            self._send_heartbeat(wfile, protocol)
-            while not protocol.acked.is_set():
-                logger.debug('waiting next input line')
-                data = rfile.readline()
-
-                if not data:
-                    logger.info('input channel is closed, quitting input loop')
-                    break
-
-                protocol.process(data, proc)
-        except Exception:
-            logger.exception('Command input polling failed')
-            if proc.poll() is not None:
-                proc.terminate()
-        finally:
-            logger.info('stdin polling done')
-
-
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING'], default='INFO')
+    parser.add_argument('-l', '--log-level', choices=['DEBUG', 'INFO', 'WARNING'], default='INFO')
+    subparsers = parser.add_subparsers(dest='subcommand')
 
-    subparsers = parser.add_subparsers(dest='command')
+    run_parser = subparsers.add_parser('run')
+    run_parser.add_argument('-n', '--name', type=str, required=True)
+    run_parser.add_argument('-e', '--env', type=str, nargs='*', action='append')
+    run_parser.add_argument('--cwd', type=str)
+    run_parser.add_argument('-p', '--port', type=int)
+    run_parser.add_argument('--bind-address', type=str)
+    run_parser.add_argument('--hostname', type=str)
+    run_parser.add_argument('-k', '--kill-timeout', type=float)
+    run_parser.add_argument('-d', '--log-dir', type=str)
+    run_parser.add_argument('command', type=str)
+    run_parser.add_argument('args', type=str, nargs='*')
 
-    worker_parser = subparsers.add_parser('worker')
-    worker_parser.add_argument('--ws-url')
-    worker_parser.add_argument('--master-port', type=int, required=True)
-    worker_parser.add_argument('--ws-bin')
-    worker_parser.add_argument('--ws-arg', nargs='*')
-    worker_parser.add_argument('-e', '--env', nargs='*')
-    worker_parser.add_argument('--cwd')
-    worker_parser.add_argument('--bufsize', type=int, default=1024)
-    worker_parser.add_argument('--pause', type=float, default=0.1)
-    worker_parser.add_argument('--timeout', type=float, default=5.0)
-    worker_parser.add_argument('command')
-    worker_parser.add_argument('args', nargs='*')
+    client_parser = subparsers.add_parser('client')
+    client_parser.add_argument('-u', '--url', type=str, required=True)
 
     args = parser.parse_args()
 
@@ -662,7 +693,7 @@ def main():
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
-    if args.command == 'worker':
+    if args.subcommand == 'run':
         env = {}
         for pair in args.env or []:
             key, sep, value = pair.partition('=')
@@ -670,20 +701,27 @@ def main():
                 value = os.environ[key]
             env[key] = value
 
-        worker = WsWorker(
-            ws_url=args.ws_url,
-            master_port=args.master_port,
+        server = WorkerServer(
+            name=args.name,
             command=args.command,
             args=args.args,
             env=env,
             cwd=args.cwd,
-            ws_bin=args.ws_bin,
-            ws_args=args.ws_arg,
-            bufsize=args.bufsize,
-            pause=args.pause,
-            kill_timeout=args.timeout,
+            port=args.port,
+            bind_address=args.bind_address,
+            hostname=args.hostname,
+            log_dir=args.log_dir,
         )
-        worker.run()
+        server.run()
+    elif args.subcommand == 'client':
+        client = WorkerClient(
+            url=args.url,
+        )
+        returncode = client.run()
+        sys.exit(returncode)
+    else:
+        raise ValueError(f'Invalid subcommand: {args.subcommand!r}')
 
-if __name__ == '__main__' and not os.getenv(ENV_DISABLE_MAIN):
+
+if __name__ == '__main__' and not os.environ.get(ENV_DISABLE_MAIN):
     main()

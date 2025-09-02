@@ -25,18 +25,20 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
     Executes the function code snippet in the remote Livy session.
 
     This will wrap the code in a function to avoid polluting the global namespace. If you do need
-    to assign variables, use the `globals()` dict. Also, you can use the return statement to
+    to assign global variables, use the `globals()` dict. Also, you can use the return statement to
     get values back from the remote session.
     '''
 
-    def __init__(self, code: str, pause: float = 0.3, vars: Optional[Dict[str, Any]] = None):
+    def __init__(self, code: str, pause: float = 0.3, vars: Optional[Dict[str, Any]] = None, globals: Optional[List[str]] = None):
         '''
         Parameters:
         - code: the Pyspark function code to execute. It will be dedented automatically.
         - vars: variables to assign before the code. The values must be pickleable.
+        - globals: global variable names.
         '''
         self.code = code
         self.vars = vars or {}
+        self.globals = globals
         self.pause = pause
 
     def run(self, session: 'LivySession') -> Tuple[List[str], Any]:
@@ -51,7 +53,11 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
 
         code += '\n' + f'def {code_name}():'
 
-        if vars:
+        if self.globals:
+            line = 'global ' + ', '.join(self.globals)
+            code += '\n    ' + line
+
+        if self.vars:
             # inject the pickled variables
             code += '\n' + textwrap.indent(textwrap.dedent('''
                 from base64 import b64decode

@@ -13,6 +13,8 @@ services:
       - "host.docker.internal:host-gateway"
     image: livy-uploads-dev-build:latest
     hostname: livy
+    mem_limit: 3g
+    cpus: 2
     build:
       context: .
       dockerfile: ./Dockerfile.spark
@@ -40,8 +42,6 @@ services:
     environment:
       - SPARK_PUBLIC_DNS=localhost
       - BG_LOG_PATH=/var/log/livy-uploads-bg.log
-    mem_limit: 1g
-    cpus: 1
 
   master:
     networks:
@@ -52,8 +52,8 @@ services:
       - "host.docker.internal:host-gateway"
     hostname: master
     image: livy-uploads-dev-build:latest
-    mem_limit: 1g
-    cpus: 1
+    mem_limit: 3g
+    cpus: 2
     environment:
       - SPARK_PUBLIC_DNS=localhost
     command:
@@ -81,8 +81,8 @@ services:
       - "host.docker.internal:host-gateway"
     image: livy-uploads-dev-build:latest
     hostname: worker1
-    mem_limit: 1g
-    cpus: 1
+    mem_limit: 3g
+    cpus: 2
     environment:
       - SPARK_PUBLIC_DNS=localhost
       - BG_LOG_PATH=/var/log/livy-uploads-bg.log

@@ -60,7 +60,8 @@
   "ignore_ssl_errors": false,
   "session_configs": {
     "driverMemory": "1000M",
-    "executorCores": 2,
+    "executorCores": 1,
+    "executorMemory": "1000M",
     "conf": {
       "spark.ui.enabled": "true"
     }

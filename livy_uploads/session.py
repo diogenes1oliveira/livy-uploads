@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import itertools
 from logging import getLogger, Logger
-from threading import Lock
+from threading import RLock
 import time
 from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
@@ -55,7 +55,7 @@ class LivySession(LivyEndpoint):
         self.session_id = session_id
         self.session_info = session_info or {}
         self.session_info['id'] = session_id
-        self.lock = Lock()
+        self.lock = RLock()
         self.logger = logger or getLogger(f'session#{session_id}')
 
     def __repr__(self):
