@@ -601,7 +601,7 @@ class CallbackServer(BaseServer):
         )
         self.infos: Dict[str, WorkerInfo] = {}
         self.pause = pause or 0.3
-        self.timeout = timeout or 10.0
+        self.timeout = timeout or 20.0
 
     def handle_info(self, info: WorkerInfo) -> None:
         LOGGER.info('received callback info from %s: %s', info.name, info)

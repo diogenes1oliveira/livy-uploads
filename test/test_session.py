@@ -54,34 +54,40 @@ class TestLivySessionEndpoint:
             ttl='10s',
             heartbeatTimeoutInSecond=10,
         )
+        try:
 
-        stopped = Event()
-        do_refresh = True
-        exc = None
+            stopped = Event()
+            do_refresh = True
+            exc = None
 
-        def run():
+            def run():
+                try:
+                    while do_refresh:
+                        session.refresh_state()
+                        time.sleep(1.0)
+                except Exception as e:
+                    nonlocal exc
+                    exc = e
+                finally:
+                    stopped.set()
+
+            Thread(target=run, daemon=True).start()
+
+            session.wait_ready(LinearRetryPolicy(30, 1.0))
+
+            do_refresh = False
+            if not stopped.wait(10.0):
+                raise RuntimeError('session refresh thread did not stop as expected')
+
+            logging.info('waiting 1m30s to check session expires')
+            time.sleep(90)
+
+            assert session.refresh_state() == 'dead'
+        finally:
             try:
-                while do_refresh:
-                    session.refresh_state()
-                    time.sleep(1.0)
+                session.delete()
             except Exception as e:
-                nonlocal exc
-                exc = e
-            finally:
-                stopped.set()
-
-        Thread(target=run, daemon=True).start()
-
-        session.wait_ready(LinearRetryPolicy(30, 1.0))
-
-        do_refresh = False
-        if not stopped.wait(10.0):
-            raise RuntimeError('session refresh thread did not stop as expected')
-
-        logging.info('waiting 1m to check session expires')
-        time.sleep(60)
-
-        assert session.refresh_state() == 'dead'
+                logging.exception('error deleting session: %s', e)
 
     def test_follow(self):
         session = LivySession.create(
@@ -91,52 +97,58 @@ class TestLivySessionEndpoint:
             heartbeatTimeoutInSecond=60,
         )
         session.wait_ready(LinearRetryPolicy(60, 1.0))
+        try:
 
-        logs_iter = session.follow()
-        creation_logs = []
-        for logs in logs_iter:
-            if not logs:
-                break
-            creation_logs += logs
-        assert 'Created Spark session.' in '\n'.join(creation_logs)
+            logs_iter = session.follow()
+            creation_logs = []
+            for logs in logs_iter:
+                if not logs:
+                    break
+                creation_logs += logs
+            assert 'Created Spark session.' in '\n'.join(creation_logs)
 
-        code = textwrap.dedent('''
-            from datetime import datetime
-            import time
-            import traceback
+            code = textwrap.dedent('''
+                from datetime import datetime
+                import time
+                import traceback
 
-            from pyspark import InheritableThread
+                from pyspark import InheritableThread
 
-            def run():
-                println = sc._gateway.jvm.java.lang.System.err.println
-                try:
-                    while True:
-                        now = datetime.now().astimezone().isoformat()
-                        println('test_follow: ' + now)
-                        time.sleep(1.0)
-                except Exception:
-                    println(traceback.format_exc())
+                def run():
+                    println = sc._gateway.jvm.java.lang.System.err.println
+                    try:
+                        while True:
+                            now = datetime.now().astimezone().isoformat()
+                            println('test_follow: ' + now)
+                            time.sleep(1.0)
+                    except Exception:
+                        println(traceback.format_exc())
 
-            thread = InheritableThread(target=run, daemon=True)
-            thread.start()
-        ''')
-        r = session.request(
-            'POST',
-            f"/sessions/{session.session_id}/statements",
-            json={
-                'kind': 'pyspark',
-                'code': code,
-            },
-        )
+                thread = InheritableThread(target=run, daemon=True)
+                thread.start()
+            ''')
+            r = session.request(
+                'POST',
+                f"/sessions/{session.session_id}/statements",
+                json={
+                    'kind': 'pyspark',
+                    'code': code,
+                },
+            )
 
-        seen = set(creation_logs)
-        time.sleep(5.0)
-        logs = next(logs_iter)
-        assert len(logs) < 20
-        assert all(log not in seen for log in logs)
+            seen = set(creation_logs)
+            time.sleep(5.0)
+            logs = next(logs_iter)
+            assert len(logs) < 20
+            assert all(log not in seen for log in logs)
 
-        seen.update(logs)
-        time.sleep(5.0)
-        logs = next(logs_iter)
-        assert len(logs) < 20
-        assert all(log not in seen for log in logs)
+            seen.update(logs)
+            time.sleep(5.0)
+            logs = next(logs_iter)
+            assert len(logs) < 20
+            assert all(log not in seen for log in logs)
+        finally:
+            try:
+                session.delete()
+            except Exception as e:
+                logging.exception('error deleting session: %s', e)

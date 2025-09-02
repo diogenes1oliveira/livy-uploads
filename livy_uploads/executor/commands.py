@@ -17,6 +17,7 @@ from livy_uploads.commands import LivyRunCode
 from livy_uploads.executor import cluster
 from livy_uploads.executor.cluster import WorkerInfo
 from livy_uploads.session import LivySession, LivyCommand
+from livy_uploads.sourcecode import remove_type_annotations
 
 
 LOGGER = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class LivyPrepareMaster(LivyCommand[str]):
         '''
         LOGGER.info('sending the cluster code')
 
-        cluster_code = Path(cluster.__file__).read_text()
+        cluster_code = remove_type_annotations(Path(cluster.__file__).read_text())
         init_code = '\n'.join([
             'import os',
             f'os.environ["{cluster.ENV_DISABLE_MAIN}"] = "1"',
@@ -95,11 +96,18 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
         fname = 'run_' + name.replace('-', '_')
         command = LivyRunCode(
             code=f'''
+                import logging
                 from pyspark import InheritableThread
 
                 kwargs['name'] = name
                 kwargs['callback'] = callback_server.url.rstrip('/') + '/info'
                 def {fname}(kwargs):
+                    logging.basicConfig(
+                        level=logging.INFO,
+                        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S',
+                    )
+
                     worker = WorkerServer(**kwargs)
                     return worker.run()
 
@@ -118,5 +126,6 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
         )
         _, kwargs = command.run(session)
         if not kwargs:
+            import pdb; pdb.set_trace()
             raise TimeoutError('no info received from the worker')
         return WorkerInfo.fromdict(kwargs)

@@ -21,9 +21,12 @@ dev/rm:
 	docker-compose rm -fsv
 	docker-compose down --remove-orphans
 
-.PHONY: publish
-publish:
+.PHONY: build
+build:
 	@rm -rf dist/
 	@python3 setup.py sdist bdist_wheel
+
+.PHONY: publish
+publish: build
 	@bash -c "read -r -p 'Really publish (y/N)? ' response && [[ \$${response,,} == 'y' ]]"
 	@twine upload dist/*
