@@ -1,12 +1,14 @@
 from logging import getLogger
-from typing import Dict, Optional, TypeVar
+import threading
+from typing import Any, Dict, Mapping, Optional, TypeVar
 
 import requests
 import requests.exceptions
 
 from livy_uploads.retry_policy import RetryPolicy, DontRetryPolicy, WithExceptionsPolicy
 from livy_uploads.exceptions import LivyRequestError, LivyRetriableError
-from livy_uploads.utils import try_decode
+from livy_uploads.utils import assert_type, try_decode
+from livy_uploads.auth import Authenticator
 
 
 LOGGER = getLogger(__name__)
@@ -21,17 +23,18 @@ class LivyEndpoint:
         self,
         url: str,
         default_headers: Optional[Dict[str, str]] = None,
-        verify: bool = True,
+        verify: Optional[bool] = True,
         auth=None,
         requests_session: Optional[requests.Session] = None,
         retry_policy: Optional[RetryPolicy] = None,
+        proxy: Optional[str] = None,
     ):
         '''
         Parameters:
         - url: the base URL of the Livy server
         - default_headers: a dictionary of headers to include in every request
         - verify: whether to verify the SSL certificate of the server
-        - auth: an optional authentication object to pass to requests
+        - auth: an optional authentication object factory to pass to requests
         - requests_session: an optional requests.Session object to use for making requests
         - retry_policy: an optional retry policy to use for requests
         '''
@@ -41,10 +44,56 @@ class LivyEndpoint:
             default_headers = {'content-type': 'application/json'}
         self.default_headers = {k.lower(): v for k, v in default_headers.items()}
 
-        self.verify = verify
-        self.auth = auth
+        self.verify = True if verify is None else (verify or False)
+        self._auth = None
+        self._auth_gen = auth
+        self._auth_lock = threading.RLock()
         self.requests_session = requests_session or requests.Session()
         self.retry_policy = retry_policy or DontRetryPolicy()
+
+        self.requests_session.trust_env = False
+        self.proxy = proxy or None
+        if self.proxy:
+            self.requests_session.proxies.update({
+                'http': self.proxy,
+                'https': self.proxy,
+            })
+
+    @property
+    def auth(self):
+        if self._auth_gen is None:
+            return None
+
+        if self._auth:
+            return self._auth
+
+        with self._auth_lock:
+            if self._auth is None:
+                self._auth = self._auth_gen()
+            return self._auth
+
+    @classmethod
+    def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'LivyEndpoint':
+        if not config:
+            raise ValueError('config is required')
+
+        session = requests.Session()
+        session.trust_env = False
+        proxy = assert_type(config.get('proxy'), Optional[str])
+        if proxy:
+            session.proxies.update({
+                'http': proxy,
+                'https': proxy,
+            })
+
+        return cls(
+            url=assert_type(config['url'], str),
+            default_headers=assert_type(config.get('default_headers'), Optional[dict]),
+            verify=assert_type(config.get('verify'), Optional[bool]),
+            auth=Authenticator.from_config(config.get('auth')).get_auth,
+            retry_policy=RetryPolicy.from_config(config.get('retry_policy')),
+            proxy=proxy,
+        )
 
     def __str__(self):
         return self.__repr__()

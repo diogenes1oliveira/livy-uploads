@@ -45,14 +45,21 @@ class LivyPrepareMaster(LivyCommand[str]):
                 spark.sparkContext.addPyFile('livy_uploads_executor_cluster.py')
                 from livy_uploads_executor_cluster import CallbackServer
 
-                callback_server = CallbackServer()
-                callback_server.start()
-                _ = callback_server.url
+                try:
+                    callback_server
+                    started = False
+                except NameError:
+                    callback_server = CallbackServer()
+                    callback_server.start()
+                    started = True
+
+                _ = callback_server.url, started
             ''',
         )
-        _, url = command.run(session)
+        _, (url, started) = command.run(session)
         url: str
-        LOGGER.info('callback server started at %s', url)
+        started: bool
+        LOGGER.info('callback server %s at %s', 'started' if started else 'already running', url)
         return url
 
 

@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 import itertools
 from logging import getLogger, Logger
 from threading import RLock
 import time
-from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
+import uuid
+from typing import Any, Dict, Generic, Iterator, List, Mapping, Optional, Set, TypeVar
 
 import requests
 
 from livy_uploads.exceptions import LivyError, LivyRequestError, LivyRetriableError
 from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.retry_policy import RetryPolicy, WithExceptionsPolicy
+from livy_uploads.utils import assert_type
 
 
 LOGGER = getLogger(__name__)
@@ -97,6 +100,26 @@ class LivySession(LivyEndpoint):
                 )
             if not sessions or len(sessions) < page_size:
                 break
+
+    @classmethod
+    def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'LivySession':
+        if not config:
+            raise ValueError('config is required')
+        
+        endpoint = LivyEndpoint.from_config(config.get('endpoint'))
+        kwargs = assert_type(config['session'], dict)
+        name = assert_type(kwargs.pop('name'), str).format(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            uuid=str(uuid.uuid4()),
+        )
+
+        for session in cls.list(endpoint):
+            if session.session_name == name:
+                LOGGER.info('reusing existing session: %s', session)
+                return session
+
+        LOGGER.info('no existing session found, creating new one')
+        return cls.create(endpoint=endpoint, name=name, **kwargs)
 
     @classmethod
     def create(cls, endpoint: 'LivyEndpoint', name: str, doAs: Optional[str] = None, **kwargs) -> 'LivySession':

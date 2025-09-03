@@ -1,6 +1,8 @@
-from typing import Any, TypeVar
+from typing import Any, Type, TypeVar
 import requests
 
+
+from livy_uploads.executor.cluster import assert_type
 
 T = TypeVar('T')
 
@@ -16,4 +18,5 @@ def try_decode(response: requests.Response) -> Any:
             return response.text
         except UnicodeDecodeError:
             return response.content.decode('utf8', errors='replace')
+
 

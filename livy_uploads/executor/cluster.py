@@ -53,9 +53,9 @@ class WorkerInfo(NamedTuple):
     @classmethod
     def fromdict(cls, kwargs: Mapping) -> 'WorkerInfo':
         return cls(
-            name=_assert_type(kwargs['name'], str),
-            pid=_assert_type(kwargs['pid'], int),
-            url=_assert_type(kwargs['url'], str),
+            name=assert_type(kwargs['name'], str),
+            pid=assert_type(kwargs['pid'], int),
+            url=assert_type(kwargs['url'], str),
         )
 
     def asdict(self) -> dict:
@@ -456,16 +456,19 @@ class WorkerClient:
 
     def run(
         self,
+        stdout: BinaryIO,
         stdin: Optional[BinaryIO] = None,
-        stdout: Optional[BinaryIO] = None,
     ) -> int:
-        stdin = stdin or sys.stdin.buffer
-        stdout = stdout or sys.stdout.buffer
-
         r, w = os.pipe()
         done = threading.Event()
-        stdin_thread = threading.Thread(daemon=True, target=self._read_stdin, args=(stdin, r))
-        stdin_thread.start()
+
+        LOGGER.info('bound to remote process')
+
+        if stdin:
+            stdin_thread = threading.Thread(daemon=True, target=self._read_stdin, args=(stdin, r))
+            stdin_thread.start()
+        else:
+            stdin_thread = None
 
         signals_thread = threading.Thread(daemon=True, target=self._send_signals, args=(done,))
         signals_thread.start()
@@ -488,7 +491,7 @@ class WorkerClient:
                     self.send_signal(int(signal.SIGINT))
         finally:
             done.set()
-            if stdin_thread.is_alive():
+            if stdin_thread and stdin_thread.is_alive():
                 LOGGER.info('waiting for the stdin thread to finish')
                 os.close(w)
                 stdin_thread.join(timeout=self.stop_timeout)
@@ -520,7 +523,7 @@ class WorkerClient:
                     continue
 
                 if stop_fd in readables:
-                    LOGGER.warning('requested to exit before EOF')
+                    LOGGER.warning('requested to stop reading stdin before EOF')
                     os.read(stop_fd, 1)
                     break
 
@@ -553,7 +556,7 @@ class WorkerClient:
     def get_info(self) -> WorkerInfo:
         url = f'{self.url}/info'
         with self._opener.open(url) as response:
-            body = _assert_type(json.loads(response.read().decode('utf-8')), dict)
+            body = assert_type(json.loads(response.read().decode('utf-8')), dict)
             return WorkerInfo.fromdict(body)
 
     def enqueue_signal(self, signum: int) -> None:
@@ -646,7 +649,7 @@ class CallbackHandler(BaseHandler):
     def do_POST(self) -> None:
         if self.url.path == '/info':
             data = self.rfile.read(int(self.headers['Content-Length']))
-            body = _assert_type(json.loads(data), dict)
+            body = assert_type(json.loads(data), dict)
             info = WorkerInfo.fromdict(body)
             self.server.handle_info(info)
             self.send_entity(None)
@@ -664,9 +667,23 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _assert_type(value: Any, expected_type: Type[T]) -> T:
+def assert_type(value: Any, expected_type: Type[T]) -> T:
+    try:
+        origin = getattr(expected_type, '__origin__')
+        if origin is Union:
+            args = expected_type.__args__
+            if len(args) == 2 and args[1] is type(None):
+                nullable = True
+                expected_type = args[0]
+    except AttributeError:
+        nullable = False
+
+    if nullable and value is None:
+        return value
+
     if not isinstance(value, expected_type):
         raise ValueError(f'Expected {expected_type}, got {type(value)}')
+
     return value
 
 

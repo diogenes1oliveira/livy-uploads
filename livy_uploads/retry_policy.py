@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 import time
-from typing import Callable, TypeVar
+from typing import Any, Callable, Mapping, Optional, TypeVar
+
+from livy_uploads.utils import assert_type
 
 T = TypeVar('T')
 E = TypeVar('E', bound=Exception)
@@ -61,6 +63,15 @@ class RetryPolicy(ABC):
                     raise
                 self.delay(self.next_delay())
 
+    @classmethod
+    def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'RetryPolicy':
+        if not config:
+            return DontRetryPolicy()
+        return LinearRetryPolicy(
+            max_tries=assert_type(config['max_tries'], int),
+            pause=assert_type(config['pause'], float),
+        )
+
 
 class DontRetryPolicy(RetryPolicy):
     '''
@@ -89,6 +100,22 @@ class LinearRetryPolicy(RetryPolicy):
 
     def next_delay(self) -> float:
         self._current_try += 1
+        return self.pause
+
+
+class TimeoutRetryPolicy(RetryPolicy):
+    '''
+    A retry policy that retries until a timeout is reached.
+    '''
+    def __init__(self, timeout: float, pause: float):
+        self.timeout = timeout
+        self.pause = pause
+        self._start_time = time.monotonic()
+
+    def should_retry(self, e: Exception) -> bool:
+        return time.monotonic() - self._start_time < self.timeout
+
+    def next_delay(self) -> float:
         return self.pause
 
 

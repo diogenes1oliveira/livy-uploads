@@ -29,6 +29,7 @@ run_requirements = read_reqs("./requirements.txt")
 dev_requirements = read_reqs("./requirements-dev.txt")
 magics_requirements = read_reqs("./requirements-magics.txt")
 jupyter_requirements = read_reqs("./requirements-jupyter.txt")
+kerberos_requirements = read_reqs("./requirements-kerberos.txt")
 
 with io.open("README.md", encoding="utf8") as readme:
     long_description = readme.read()
@@ -55,6 +56,7 @@ setup(
         "unit": dev_requirements,
         "integration": dev_requirements,
         "magics": magics_requirements,
+        "kerberos": kerberos_requirements,
     },
     python_requires=">=3.6",
     classifiers=[
