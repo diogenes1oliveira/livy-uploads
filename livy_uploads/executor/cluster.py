@@ -12,21 +12,22 @@ __all__ = ('WorkerServer', 'WorkerClient', 'CallbackServer', 'WorkerInfo', 'Poll
 import argparse
 import collections.abc
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import fcntl
 import json
 import logging
 import os
 from pathlib import Path
 import queue
-import select
 import shlex
-import signal
 import socket
 from socketserver import ThreadingMixIn
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
-from typing import Any, BinaryIO, Dict, Optional, List, Mapping, Callable, NamedTuple, Type, TypeVar, Union
+from typing import Any, BinaryIO, Dict, Optional, List, Mapping, Callable, NamedTuple, Tuple, Type, TypeVar, Union
 from urllib.parse import ParseResult, urlparse, parse_qs
 from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
@@ -176,6 +177,7 @@ class WorkerServer(BaseServer):
         log_dir: Optional[str] = 'var/log',
         callback: Optional[Union[str, Callable[[WorkerInfo], None]]] = None,
         stdin: Optional[bool] = True,
+        tty_size: Optional[Tuple[int, int]] = None,
     ):
         '''
         Args:
@@ -193,6 +195,7 @@ class WorkerServer(BaseServer):
             pause: Small pause to wait for data consistency.
             callback: An optional callback to call when the worker starts. Might be a URL to POST the info to or a callable.
             stdin: Whether to enable stdin in the process.
+            tty_size: The size of the TTY to allocate for the process.
         '''
         super().__init__(
             RequestHandlerClass=WorkerHandler,
@@ -210,6 +213,7 @@ class WorkerServer(BaseServer):
         self.log_file = Path(log_dir or 'var/log') / f'{name}.log'
         self.callback = callback
         self.stdin = stdin if stdin is not None else True
+        self.tty_size = tty_size or None
         self._process: Optional[subprocess.Popen] = None
         self._server_is_open = False
         self._fp: Optional[BinaryIO] = None
@@ -341,7 +345,7 @@ class WorkerServer(BaseServer):
             threading.Thread(daemon=True, target=delayed_done).start()
         return returncode
 
-    def send_signal(self, signum: int) -> None:
+    def send_signal(self, signum: int, tty_size: Optional[Tuple[int, int]] = None) -> None:
         if not self._process:
             raise IOError('Process is not running')
         LOGGER.info('sending signal %d to process %d', signum, self._process.pid)
@@ -403,7 +407,13 @@ class WorkerHandler(BaseHandler):
         if self.url.path == '/signal':
             qs = parse_qs(self.url.query)
             signum = int((qs.get('signum') or ['0'])[0])
-            self.server.send_signal(signum)
+            rows = int((qs.get('rows') or ['0'])[0] or 0)
+            cols = int((qs.get('cols') or ['0'])[0] or 0)
+            if rows and cols:
+                tty_size = (rows, cols)
+            else:
+                tty_size = None
+            self.server.send_signal(signum, tty_size)
             self.send_entity(None)
         elif self.url.path == '/stdin':
             data = self.rfile.read(int(self.headers['Content-Length']))
@@ -433,8 +443,10 @@ class WorkerClient:
         self.stop_timeout = stop_timeout or 10.0
         self.proxy = proxy
         self._stdout_offset = 0
-        self._tty = tty
+        self._tty = tty or False
         self._signals_queue = queue.Queue()
+        self._winsize: Optional[Tuple[int, int]] = None
+        self._done = threading.Event()
 
         handler = ProxyHandler({'http': self.proxy, 'https': self.proxy} if self.proxy else {})
         self._opener = build_opener(handler)
@@ -454,125 +466,52 @@ class WorkerClient:
 
         return PollResult(stdout=data, returncode=returncode)
 
-    def run(
-        self,
-        stdout: BinaryIO,
-        stdin: Optional[BinaryIO] = None,
-    ) -> int:
-        r, w = os.pipe()
-        done = threading.Event()
+    def get(self, url: str) -> Tuple[int, Optional[bytes]]:
+        with self._opener.open(url) as response:
+            return response.status, response.read()
 
-        LOGGER.info('bound to remote process')
-
-        if stdin:
-            stdin_thread = threading.Thread(daemon=True, target=self._read_stdin, args=(stdin, r))
-            stdin_thread.start()
-        else:
-            stdin_thread = None
-
-        signals_thread = threading.Thread(daemon=True, target=self._send_signals, args=(done,))
-        signals_thread.start()
-
-        try:
-            while True:
-                try:
-                    result = self.poll()
-                    stdout.write(result.stdout)
-                    stdout.flush()
-
-                    if result.returncode is not None:
-                        LOGGER.info('process finished with returncode %d', result.returncode)
-                        return result.returncode
-
-                    if len(result.stdout) < self.bufsize:
-                        time.sleep(self.pause)
-                except KeyboardInterrupt:
-                    LOGGER.info('received KeyboardInterrupt')
-                    self.send_signal(int(signal.SIGINT))
-        finally:
-            done.set()
-            if stdin_thread and stdin_thread.is_alive():
-                LOGGER.info('waiting for the stdin thread to finish')
-                os.close(w)
-                stdin_thread.join(timeout=self.stop_timeout)
-                if stdin_thread.is_alive():
-                    raise TimeoutError('stdin thread did not finish in time')
-
-    def _send_signals(self, done: threading.Event) -> None:
-        try:
-            while not done.is_set():
-                try:
-                    signum, t = self._signals_queue.get(timeout=1.0)
-                    LOGGER.info('forwarding signal %d to process (dt=%f)', signum, time.monotonic() - t)
-                except queue.Empty:
-                    continue
-                self.send_signal(signum)
-        except:
-            LOGGER.exception('error in _send_signals')
-
-    def _read_stdin(self, stdin: BinaryIO, stop_fd: int):
-        try:
-            if self._tty is None:
-                tty = stdin.isatty()
-            else:
-                tty = self._tty
-
-            while True:
-                readables, _, _ = select.select([stdin, stop_fd], [], [], 1.0)
-                if not readables:
-                    continue
-
-                if stop_fd in readables:
-                    LOGGER.warning('requested to stop reading stdin before EOF')
-                    os.read(stop_fd, 1)
-                    break
-
-                if tty:
-                    data = stdin.readline()
-                else:
-                    data = stdin.read(self.bufsize)
-
-                self.write_stdin(data)
-                if not data:
-                    LOGGER.info('EOF in stdin')
-                    break
-        except:
-            LOGGER.exception('error in _read_stdin')
+    def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
+        request = Request(url=url, data=data, method='POST')
+        with self._opener.open(request) as response:
+            return response.status, response.read()
 
     def get_stdout(self, start: int = 0, size: Optional[int] = None) -> bytes:
         size = size or self.bufsize
         url = f'{self.url}/stdout?start={start}&size={size}'
-        with self._opener.open(url) as response:
-            return response.read()
+        _, data = self.get(url)
+        return data or b''
 
     def get_returncode(self) -> Optional[int]:
         url = f'{self.url}/poll'
-        with self._opener.open(url) as response:
-            if response.status == 204:
-                return None
-            else:
-                return int(response.read().decode('utf-8'))
+        status, data = self.get(url)
+        if 200 <= status < 300:
+            return None
+        else:
+            return int(data.decode('utf8').strip())
 
     def get_info(self) -> WorkerInfo:
         url = f'{self.url}/info'
-        with self._opener.open(url) as response:
-            body = assert_type(json.loads(response.read().decode('utf-8')), dict)
-            return WorkerInfo.fromdict(body)
+        _, data = self.get(url)
+        body = assert_type(json.loads(data.decode('utf-8')), dict)
+        return WorkerInfo.fromdict(body)
 
     def enqueue_signal(self, signum: int) -> None:
         self._signals_queue.put((signum, time.monotonic()))
 
-    def send_signal(self, signum: int) -> None:
+    def send_signal(self, signum: int, tty_size: Optional[Tuple[int, int]] = None) -> None:
         url = f'{self.url}/signal?signum={signum}'
-        with self._opener.open(url, data=b'') as response:
-            if response.status != 204:
-                raise IOError(f'Failed to send signal {signum} to {self.url}')
+        if tty_size:
+            url += f'&rows={tty_size[0]}&cols={tty_size[1]}'
+
+        status, _ = self.post(url)
+        if not (200 <= status < 300):
+            raise IOError(f'Failed to send signal {signum} to {self.url}')
 
     def write_stdin(self, data: bytes) -> None:
         url = f'{self.url}/stdin'
-        with self._opener.open(url, data=data) as response:
-            if response.status != 204:
-                raise IOError(f'Failed to write stdin to {self.url}')
+        status, _ = self.post(url, data=data)
+        if not (200 <= status < 300):
+            raise IOError(f'Failed to write stdin to {self.url}')
 
 
 class CallbackServer(BaseServer):
@@ -685,6 +624,15 @@ def assert_type(value: Any, expected_type: Type[T]) -> T:
         raise ValueError(f'Expected {expected_type}, got {type(value)}')
 
     return value
+
+
+def get_winsize(fd: int) -> Tuple[int, int]:
+    """
+    Get the terminal size of the given file descriptor.
+    """
+    s = struct.pack("HHHH", 0, 0, 0, 0)
+    rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, s))
+    return rows, cols
 
 
 def main() -> None:

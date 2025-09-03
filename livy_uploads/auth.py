@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 import subprocess
 
+from requests.auth import AuthBase
 from livy_uploads.utils import assert_type
 try:
     from requests_gssapi import HTTPSPNEGOAuth
@@ -20,16 +21,16 @@ LOGGER = logging.getLogger(__name__)
 
 
 class Authenticator:
-    def get_auth(self):
+    def __call__(self) -> Optional[AuthBase]:
         return None
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'Authenticator':
-        if not config:
+        if not config or config.get('type') != 'kerberos':
             return Authenticator()
 
         return KerberosAuthenticator(
-            principal=assert_type(config['principal'], str),
+            principal=assert_type(config.get('principal'), Optional[str]),
             keytab=assert_type(config.get('keytab'), Optional[str]),
             password=assert_type(config.get('password'), Optional[str]),
             krb5_config=assert_type(config.get('krb5_config'), Optional[str]),
@@ -50,12 +51,11 @@ class MutualAuth(Enum):
 class KerberosAuthenticator(Authenticator):
     def __init__(
         self,
-        principal: str,
-        keytab: Optional[Union[str, Path]],
+        principal: Optional[str] = None,
+        keytab: Optional[Union[str, Path]] = None,
         password: Optional[str] = None,
         krb5_config: Optional[Union[str, Path]] = None,
         krb5_cache: Optional[Union[str, Path]] = None,
-        service: Optional[str] = None,
         mutual_authentication: Optional[MutualAuth] = None,
         target_name: Optional[str] = None,
         delegate: bool = False,
@@ -64,24 +64,24 @@ class KerberosAuthenticator(Authenticator):
         if HTTPSPNEGOAuth is None:
             raise ImportError('requests-gssapi is not installed')
 
-        self.principal = principal
+        self.principal = principal or None
 
-        if not keytab and not password:
-            raise ValueError('Either keytab or password must be provided')
-        if keytab and password:
-            raise ValueError('Only one of keytab or password must be provided')
+        if self.principal:
+            if not keytab and not password:
+                raise ValueError('Either keytab or password must be provided')
+            if keytab and password:
+                raise ValueError('Only one of keytab or password must be provided')
 
         self.keytab = keytab or None
         self.password = password or None
         self.krb5_config = Path(krb5_config or '/etc/krb5.conf')
         self.krb5_cache = Path(krb5_cache or 'var/krb5_cache')
-        self.service = service or None
         self.mutual_authentication = mutual_authentication or None
         self.target_name = target_name or None
         self.delegate = delegate or None
         self.opportunistic_auth = opportunistic_auth or None
 
-    def get_auth(self):
+    def __call__(self) -> AuthBase:
         assert HTTPSPNEGOAuth is not None, 'requests-gssapi is not installed'
 
         LOGGER.info('initializing environment')
@@ -89,7 +89,9 @@ class KerberosAuthenticator(Authenticator):
         os.environ['KRB5_CONFIG'] = str(self.krb5_config.absolute())
         os.environ['KRB5CCNAME'] = str(self.krb5_cache.absolute())
 
-        if self.keytab:
+        if not self.principal:
+            LOGGER.info('using cached credentials')
+        elif self.keytab:
             LOGGER.info('logging with principal=%s and keytab=%s', self.principal, self.keytab)
             subprocess.run(['kinit', '-Vkt', self.keytab, self.principal], check=True)
         else:
@@ -98,8 +100,6 @@ class KerberosAuthenticator(Authenticator):
             subprocess.run(['kinit', '-V', self.principal], check=True, input=stdin)
 
         kwargs = dict(
-            principal=self.principal,
-            service='HTTP',
             mutual_authentication=self.mutual_authentication.value,
             target_name=self.target_name,
             delegate=self.delegate,

@@ -24,7 +24,7 @@ class LivyEndpoint:
         url: str,
         default_headers: Optional[Dict[str, str]] = None,
         verify: Optional[bool] = True,
-        auth=None,
+        authenticator: Optional[Authenticator] = None,
         requests_session: Optional[requests.Session] = None,
         retry_policy: Optional[RetryPolicy] = None,
         proxy: Optional[str] = None,
@@ -34,7 +34,7 @@ class LivyEndpoint:
         - url: the base URL of the Livy server
         - default_headers: a dictionary of headers to include in every request
         - verify: whether to verify the SSL certificate of the server
-        - auth: an optional authentication object factory to pass to requests
+        - authenticator: an optional authentication object factory to pass to requests
         - requests_session: an optional requests.Session object to use for making requests
         - retry_policy: an optional retry policy to use for requests
         '''
@@ -46,7 +46,7 @@ class LivyEndpoint:
 
         self.verify = True if verify is None else (verify or False)
         self._auth = None
-        self._auth_gen = auth
+        self.authenticator = authenticator
         self._auth_lock = threading.RLock()
         self.requests_session = requests_session or requests.Session()
         self.retry_policy = retry_policy or DontRetryPolicy()
@@ -61,7 +61,7 @@ class LivyEndpoint:
 
     @property
     def auth(self):
-        if self._auth_gen is None:
+        if self.authenticator is None:
             return None
 
         if self._auth:
@@ -69,7 +69,7 @@ class LivyEndpoint:
 
         with self._auth_lock:
             if self._auth is None:
-                self._auth = self._auth_gen()
+                self._auth = self.authenticator()
             return self._auth
 
     @classmethod
@@ -90,7 +90,7 @@ class LivyEndpoint:
             url=assert_type(config['url'], str),
             default_headers=assert_type(config.get('default_headers'), Optional[dict]),
             verify=assert_type(config.get('verify'), Optional[bool]),
-            auth=Authenticator.from_config(config.get('auth')).get_auth,
+            authenticator=Authenticator.from_config(config.get('auth')),
             retry_policy=RetryPolicy.from_config(config.get('retry_policy')),
             proxy=proxy,
         )

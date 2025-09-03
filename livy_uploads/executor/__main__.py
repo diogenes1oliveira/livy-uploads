@@ -5,6 +5,7 @@ import os
 import sys
 
 from livy_uploads.executor.client import LivyExecutorClient
+from livy_uploads.executor.cluster import get_winsize
 from livy_uploads.utils import assert_type
 
 
@@ -29,7 +30,7 @@ def main():
     # Command and its arguments as positional arguments (must be last)
     parser.add_argument('command', help='The command to run')
     parser.add_argument('command_args', nargs='*', help='Arguments to pass to the command')
-    
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -37,7 +38,7 @@ def main():
         format='%(asctime)s %(levelname)s %(name)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
-    LOGGER.debug('args: %s', args)
+    LOGGER.info('args: %s', args)
     config = assert_type(json.load(args.config), dict)
 
     client = LivyExecutorClient.from_config(config)
@@ -55,17 +56,28 @@ def main():
                 env[key] = value
 
     # Call start method with parsed arguments
+    if args.stdin:
+        if sys.stdin.buffer.isatty() and (args.tty is not False):
+            tty_size = get_winsize(sys.stdin.fileno())
+        elif args.tty is True:
+            tty_size = (24, 80)
+        else:
+            tty_size = None
+    else:
+        tty_size = None
+
     worker_client = client.start(
         command=args.command,
         args=args.command_args,
         env=env,
         cwd=args.cwd,
         stdin=args.stdin,
-        tty=args.tty,
+        tty_size=tty_size,
         worker_port=args.worker_port,
         worker_hostname=args.worker_hostname,
         bind_address=args.bind_address,
     )
+    worker_client.bind_signals()
 
     returncode = worker_client.run(
         stdout=sys.stdout.buffer,

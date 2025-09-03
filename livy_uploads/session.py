@@ -13,6 +13,7 @@ from livy_uploads.exceptions import LivyError, LivyRequestError, LivyRetriableEr
 from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.retry_policy import RetryPolicy, WithExceptionsPolicy
 from livy_uploads.utils import assert_type
+from livy_uploads.auth import Authenticator
 
 
 LOGGER = getLogger(__name__)
@@ -31,7 +32,7 @@ class LivySession(LivyEndpoint):
         session_info: Optional[Dict[str, Any]] = None,
         default_headers: Optional[Dict[str, str]] = None,
         verify: bool = True,
-        auth=None,
+        authenticator: Optional[Authenticator] = None,
         requests_session: Optional[requests.Session] = None,
         retry_policy: Optional[RetryPolicy] = None,
         logger: Optional[Logger] = None,
@@ -42,7 +43,7 @@ class LivySession(LivyEndpoint):
         - session_id: the ID of the Spark session to use
         - default_headers: a dictionary of headers to include in every request
         - verify: whether to verify the SSL certificate of the server
-        - auth: an optional authentication object to pass to requests
+        - authenticator: an optional authentication object to pass to requests
         - requests_session: an optional requests.Session object to use for making requests
         - retries: the number of times to retry a request if it fails
         - pause: the number of seconds to wait between polling for the status of a statement
@@ -51,7 +52,7 @@ class LivySession(LivyEndpoint):
             url=url,
             default_headers=default_headers,
             verify=verify,
-            auth=auth,
+            authenticator=authenticator,
             requests_session=requests_session,
             retry_policy=retry_policy,
         )
@@ -95,7 +96,7 @@ class LivySession(LivyEndpoint):
                     session_info=session,
                     default_headers=endpoint.default_headers,
                     verify=endpoint.verify,
-                    auth=endpoint.auth,
+                    authenticator=endpoint.authenticator,
                     requests_session=endpoint.requests_session,
                 )
             if not sessions or len(sessions) < page_size:
@@ -150,7 +151,7 @@ class LivySession(LivyEndpoint):
             session_id=body['id'],
             default_headers=endpoint.default_headers,
             verify=endpoint.verify,
-            auth=endpoint.auth,
+            authenticator=endpoint.authenticator,
             requests_session=endpoint.requests_session,
             retry_policy=endpoint.retry_policy,
         )

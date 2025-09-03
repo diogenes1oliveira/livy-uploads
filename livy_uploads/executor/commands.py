@@ -9,7 +9,7 @@ __all__ = ('LivyPrepareMaster', 'LivyStartProcess')
 
 
 import logging
-from typing import List, Optional, TypeVar, Mapping
+from typing import List, Optional, Tuple, TypeVar, Mapping
 from uuid import uuid4
 
 from livy_uploads.commands import LivyRunCode, LivyUploadFile
@@ -75,6 +75,7 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
         env: Optional[Mapping[str, str]] = None,
         cwd: Optional[str] = None,
         stdin: Optional[bool] = True,
+        tty_size: Optional[Tuple[int, int]] = None,
         port: Optional[int] = 0,
         bind_address: Optional[str] = '0.0.0.0',
         hostname: Optional[str] = None,
@@ -87,6 +88,7 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
             env=env or {},
             cwd=cwd,
             stdin=stdin,
+            tty_size=tty_size,
             port=port,
             bind_address=bind_address,
             hostname=hostname,
@@ -135,6 +137,8 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
                 name=name,
             ),
         )
+        
+        LOGGER.info('starting the command and waiting for the worker info')
         _, kwargs = command.run(session)
         if not kwargs:
             import pdb; pdb.set_trace()

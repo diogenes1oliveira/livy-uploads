@@ -20,6 +20,9 @@
     },
     "endpoint": {
         "url": "http://livy:8998",
-        "proxy": "http://localhost:8090"
+        "proxy": "http://localhost:8090",
+        "auth": {
+            "type": "kerberos"
+        }
     }
 }

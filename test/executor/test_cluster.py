@@ -90,6 +90,10 @@ class TestWorkerHTTPServer:
         assert client.poll() == (b'finished\n', None)
 
         time.sleep(0.5)
+        s1 = client.poll()
+        s2 = client.poll()
+        s3 = client.poll()
+        LOGGER.info("s1, s2, s3 = %r", (s1, s2, s3))
         assert client.poll() == (b'', 42)
 
         # thread should take a while to die
@@ -158,27 +162,6 @@ class TestWorkerHTTPServer:
         thread.join(timeout=5)
         assert not thread.is_alive()
 
-    def test_happy_run(self, tmp_path: Path):
-        name = str(uuid4())
-        worker = WorkerServer(
-            name=name,
-            command='bash',
-            args=[
-                '-c',
-                'echo >&2 oi && exit 42',
-            ],
-            hostname='localhost',
-            log_dir=str(tmp_path),
-            pause=0.5,
-        )
-        worker.start()
-
-        client = WorkerClient(worker.url)
-        stdout = io.BytesIO()
-        returncode = client.run(stdin=open(os.devnull, 'rb'), stdout=stdout)
-        assert returncode == 42
-        assert stdout.getvalue() == b'oi\n'
-
 
 class TestCallbackServer:
     @pytest.fixture
@@ -227,7 +210,7 @@ class TestCallbackServer:
         assert info.name == 'test'
         assert 0.5 <= dt < 2.0
 
-    def test_run_does_register(self, server: CallbackServer, tmp_path: Path):
+    def test_start_does_register(self, server: CallbackServer, tmp_path: Path):
         worker = WorkerServer(
             name='test2',
             command='false',

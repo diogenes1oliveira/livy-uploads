@@ -8,9 +8,9 @@ Client for the Livy executor.
 __all__ = ('LivyExecutorClient',)
 
 import logging
-from typing import Any, Optional, List, Mapping
+from typing import Any, Optional, List, Mapping, Tuple
 
-from livy_uploads.executor.cluster import WorkerClient
+from livy_uploads.executor.cluster import WorkerClient, get_winsize
 from livy_uploads.executor.commands import (
     LivyPrepareMaster,
     LivyStartProcess,
@@ -101,7 +101,7 @@ class LivyExecutorClient:
         env: Optional[Mapping[str, str]] = None,
         cwd: Optional[str] = None,
         stdin: Optional[bool] = True,
-        tty: Optional[bool] = None,
+        tty_size: Optional[Tuple[int, int]] = None,
         worker_port: Optional[int] = 0,
         worker_hostname: Optional[str] = None,
         bind_address: Optional[str] = '0.0.0.0',
@@ -113,10 +113,13 @@ class LivyExecutorClient:
             env: Override environment variables for the command.
             cwd: The working directory to run the command in. If the directory does not exist, it will be created.
             stdin: Whether to enable stdin in the process.
+            tty_size: The size of the TTY to allocate for the process.
             worker_port: The port the worker server will listen on. If 0, a free port will be chosen.
             worker_hostname: The advertised worker hostname. If not provided, the FQDN will be used.
             bind_address: The address to bind to. If not provided, defaults to `0.0.0.0`.
         '''
+        stdin = True if stdin is None else stdin
+
         info = self.session.apply(LivyStartProcess(
             command=command,
             args=args,
@@ -128,13 +131,14 @@ class LivyExecutorClient:
             pause=self.pause,
             log_dir=self.log_dir,
             stdin=stdin,
+            tty_size=tty_size,
         ))
         LOGGER.info('got worker info: %s', info)
 
         return WorkerClient(
             url=info.url,
             pause=self.pause,
-            tty=tty,
+            tty=True if tty_size else False,
             stop_timeout=self.stop_timeout,
             bufsize=self.bufsize,
             proxy=self.proxy,
