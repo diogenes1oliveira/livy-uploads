@@ -55,18 +55,20 @@ def main():
             else:
                 env[key] = value
 
-    # Call start method with parsed arguments
+    tty_size = None
+
     if args.stdin:
-        if sys.stdin.buffer.isatty() and (args.tty is not False):
-            tty_size = get_winsize(sys.stdin.fileno())
-        elif args.tty is True:
-            tty_size = (24, 80)
+        if sys.stdin.buffer.isatty():
+            if args.tty is not False:
+                tty_size = get_winsize(sys.stdin.fileno())
         else:
-            tty_size = None
+            if args.tty is True:
+                tty_size = (24, 80)
     else:
         tty_size = None
 
-    worker_client = client.start(
+    # Call start method with parsed arguments
+    monitor = client.start(
         command=args.command,
         args=args.command_args,
         env=env,
@@ -77,12 +79,12 @@ def main():
         worker_hostname=args.worker_hostname,
         bind_address=args.bind_address,
     )
-    worker_client.bind_signals()
-
-    returncode = worker_client.run(
-        stdout=sys.stdout.buffer,
+    returncode = monitor.run(
         stdin=sys.stdin.buffer if args.stdin else None,
+        stdout=sys.stdout.buffer,
+        tty=args.tty,
     )
+
     sys.exit(returncode)
 
 

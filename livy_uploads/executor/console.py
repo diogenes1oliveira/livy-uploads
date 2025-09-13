@@ -29,17 +29,25 @@ class Console(ABC):
     A class to abstract the stdin and signals of a terminal process.
     """
 
+    def __init__(self, pause: Optional[float] = None) -> None:
+        self.pause = pause or 1.0
+        self.signals_queue = queue.Queue()
+
     def setup(self) -> None:
-        """
-        Setup the console.
-        """
-        pass
+        def handle_signal(signum, frame=None):
+            self.signals_queue.put_nowait(Signal(signum, None, time.monotonic(), datetime.now(timezone.utc)))
+
+        for s in set(signal.Signals) - {signal.SIGKILL, signal.SIGSTOP, signal.SIGINT}:
+            try:
+                signal.signal(s, handle_signal)
+            except ValueError:
+                pass
 
     def close(self) -> None:
         """
         Close the console.
         """
-        pass
+        self.signals_queue.put(None)
 
     def __enter__(self) -> 'Console':
         self.setup()
@@ -48,7 +56,6 @@ class Console(ABC):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    @abstractmethod
     def get_signal(self) -> Optional[Signal]:
         """
         Gets an enqueued signal from the console.
@@ -56,7 +63,15 @@ class Console(ABC):
         Raises:
             - `EOFError` if the console is closed.
         """
-        raise NotImplementedError
+        try:
+            s = self.signals_queue.get(timeout=self.pause)
+        except queue.Empty:
+            return None
+
+        if s is None:
+            raise EOFError
+
+        return s
 
     @abstractmethod
     def read(self) -> bytes:
@@ -91,39 +106,17 @@ class InterruptibleConsole(Console):
     """
 
     def __init__(self, stdin: Optional[BinaryIO] = None, pause: Optional[float] = None):
+        super().__init__(pause)
         self.stdin: BinaryIO = stdin or sys.stdin.buffer
-        self.pause = pause or 1.0
         r, w = os.pipe()
         self._rpipe = os.fdopen(r, 'rb', 0)
         self._wpipe = os.fdopen(w, 'wb', 0)
-        self.signals_queue = queue.Queue()
-
-    def setup(self) -> None:
-        def handle_signal(signum, frame=None):
-            self.signals_queue.put_nowait(Signal(signum, None, time.monotonic(), datetime.now(timezone.utc)))
-
-        for s in set(signal.Signals) - {signal.SIGKILL, signal.SIGSTOP, signal.SIGINT}:
-            try:
-                signal.signal(s, handle_signal)
-            except ValueError:
-                pass
 
     def close(self) -> None:
-        self.signals_queue.put(None)
+        super().close()
         if self._wpipe is not None:
             self._wpipe.close()
             self._wpipe = None
-
-    def get_signal(self) -> Optional[Signal]:
-        try:
-            s = self.signals_queue.get(timeout=self.pause)
-        except queue.Empty:
-            return None
-
-        if s is None:
-            raise EOFError
-
-        return s
 
     def wait(self, pause: Optional[float] = None) -> bool:
         pause = pause if pause is not None else self.pause

@@ -7,7 +7,7 @@ Code to execute a command in a remote cluster worker.
 This is module meant to be sent to a remote cluster and executed there, so don't import non-standard libraries.
 '''
 
-__all__ = ('WorkerServer', 'WorkerClient', 'CallbackServer', 'WorkerInfo', 'PollResult', 'get_free_port')
+__all__ = ('WorkerServer', 'WorkerClient', 'CallbackServer', 'WorkerInfo', 'PollResult', 'BaseHttpClient', 'get_free_port')
 
 import argparse
 import collections.abc
@@ -424,7 +424,7 @@ class WorkerHandler(BaseHandler):
             self.send_error(404)
 
 
-class HttpClient:
+class BaseHttpClient:
     """
     A simple client for HTTP requests.
 
@@ -455,11 +455,11 @@ class WorkerClient:
         self,
         url: str,
         bufsize: int = 4096,
-        http_client: Optional[HttpClient] = None,
+        http_client: Optional[BaseHttpClient] = None,
     ):
         self.url = url
         self.bufsize = bufsize
-        self.http_client = http_client or HttpClient()
+        self.http_client = http_client or BaseHttpClient()
         self._lock = threading.Lock()
         self._stdout_offset = 0
         self._returncode = None

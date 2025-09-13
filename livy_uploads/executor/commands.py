@@ -141,6 +141,5 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
         LOGGER.info('starting the command and waiting for the worker info')
         _, kwargs = command.run(session)
         if not kwargs:
-            import pdb; pdb.set_trace()
             raise TimeoutError('no info received from the worker')
         return WorkerInfo.fromdict(kwargs)
