@@ -17,7 +17,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import queue
 import shlex
 import socket
 from socketserver import ThreadingMixIn
@@ -119,6 +118,8 @@ class BaseServer(ThreadingMixIn, HTTPServer):
             LOGGER.info('shutting down the server')
             self.shutdown()
             self._serve_thread.join(timeout=2.0)
+            if self._serve_thread.is_alive():
+                raise RuntimeError('Server thread did not shut down')
             self._serve_thread = None
 
 
@@ -423,6 +424,28 @@ class WorkerHandler(BaseHandler):
             self.send_error(404)
 
 
+class HttpClient:
+    """
+    A simple client for HTTP requests.
+
+    This default implementation uses the built-in `urllib.request` module.
+    """
+
+    def __init__(self, request_timeout: Optional[float] = None, proxy: Optional[str] = None):
+        self.request_timeout = request_timeout or 3.0
+        self.proxy = proxy
+        self._opener = build_opener(ProxyHandler({'http': self.proxy, 'https': self.proxy} if self.proxy else {}))
+
+    def get(self, url: str) -> Tuple[int, Optional[bytes]]:
+        with self._opener.open(url, timeout=self.request_timeout) as response:
+            return response.status, response.read()
+
+    def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
+        request = Request(url=url, data=data or None, method='POST')
+        with self._opener.open(request, timeout=self.request_timeout) as response:
+            return response.status, response.read()
+
+
 class WorkerClient:
     """
     A client for polling the status of the worker.
@@ -432,84 +455,65 @@ class WorkerClient:
         self,
         url: str,
         bufsize: int = 4096,
-        pause: Optional[float] = None,
-        tty: Optional[bool] = None,
-        stop_timeout: Optional[float] = None,
-        proxy: Optional[str] = None,
+        http_client: Optional[HttpClient] = None,
     ):
         self.url = url
         self.bufsize = bufsize
-        self.pause = pause or 0.5
-        self.stop_timeout = stop_timeout or 10.0
-        self.proxy = proxy
+        self.http_client = http_client or HttpClient()
+        self._lock = threading.Lock()
         self._stdout_offset = 0
-        self._tty = tty or False
-        self._signals_queue = queue.Queue()
-        self._winsize: Optional[Tuple[int, int]] = None
-        self._done = threading.Event()
-
-        handler = ProxyHandler({'http': self.proxy, 'https': self.proxy} if self.proxy else {})
-        self._opener = build_opener(handler)
+        self._returncode = None
 
     def poll(self) -> PollResult:
-        data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
-        self._stdout_offset += len(data)
-        returncode = None
+        with self._lock:
+            if self._returncode is not None:
+                return PollResult(stdout=b'', returncode=self._returncode)
 
-        if len(data) == 0:
-            time.sleep(self.pause)
             data = self.get_stdout(start=self._stdout_offset, size=self.bufsize)
             self._stdout_offset += len(data)
+            returncode = None
 
             if len(data) == 0:
                 returncode = self.get_returncode()
+                if returncode is not None:
+                    self._returncode = returncode
 
-        return PollResult(stdout=data, returncode=returncode)
-
-    def get(self, url: str) -> Tuple[int, Optional[bytes]]:
-        with self._opener.open(url) as response:
-            return response.status, response.read()
-
-    def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
-        request = Request(url=url, data=data, method='POST')
-        with self._opener.open(request) as response:
-            return response.status, response.read()
+            return PollResult(stdout=data, returncode=returncode)
 
     def get_stdout(self, start: int = 0, size: Optional[int] = None) -> bytes:
         size = size or self.bufsize
         url = f'{self.url}/stdout?start={start}&size={size}'
-        _, data = self.get(url)
+        _, data = self.http_client.get(url)
         return data or b''
 
     def get_returncode(self) -> Optional[int]:
         url = f'{self.url}/poll'
-        status, data = self.get(url)
-        if 200 <= status < 300:
+        status, data = self.http_client.get(url)
+        if status == 200:
+            return int(data.decode('utf8').strip())
+        elif status == 204:
             return None
         else:
-            return int(data.decode('utf8').strip())
+            raise IOError(f'Failed to get returncode from {self.url}: {status}')
 
     def get_info(self) -> WorkerInfo:
         url = f'{self.url}/info'
-        _, data = self.get(url)
+        _, data = self.http_client.get(url)
         body = assert_type(json.loads(data.decode('utf-8')), dict)
         return WorkerInfo.fromdict(body)
-
-    def enqueue_signal(self, signum: int) -> None:
-        self._signals_queue.put((signum, time.monotonic()))
 
     def send_signal(self, signum: int, tty_size: Optional[Tuple[int, int]] = None) -> None:
         url = f'{self.url}/signal?signum={signum}'
         if tty_size:
             url += f'&rows={tty_size[0]}&cols={tty_size[1]}'
 
-        status, _ = self.post(url)
+        status, _ = self.http_client.post(url)
         if not (200 <= status < 300):
             raise IOError(f'Failed to send signal {signum} to {self.url}')
 
     def write_stdin(self, data: bytes) -> None:
         url = f'{self.url}/stdin'
-        status, _ = self.post(url, data=data)
+        status, _ = self.http_client.post(url, data=data)
         if not (200 <= status < 300):
             raise IOError(f'Failed to write stdin to {self.url}')
 

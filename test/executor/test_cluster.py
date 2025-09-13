@@ -38,12 +38,12 @@ class TestWorkerHTTPServer:
                     trap 'TRAPPED=1' USR1
                     echo "started"
                     while [ -z "$TRAPPED" ]; do
-                        sleep 1
+                        sleep 0.1
                     done
                     echo "got signal SIGUSR1"
                     TRAPPED=
                     while [ -z "$TRAPPED" ]; do
-                        sleep 1
+                        sleep 0.1
                     done
                     echo "finished"
                     exit 42
@@ -68,38 +68,38 @@ class TestWorkerHTTPServer:
         assert info.pid > 0
         assert info.url == worker.url
 
-        # First output line in the dummy script
+        LOGGER.info('testing first output line')
         assert client.poll() == (b'started\n', None)
 
-        # Should have nothing in the output for a while
+        LOGGER.info('should have nothing in the output for a while')
         time.sleep(0.5)
         assert client.poll() == (b'', None)
 
-        # Now send the signal for the first time
+        LOGGER.info('sending signal for the first time')
         client.send_signal(int(signal.SIGUSR1))
         time.sleep(0.5)
         assert client.poll() == (b'got signal SIGUSR1\n', None)
 
-        # Should have nothing in the output for a while
+        LOGGER.info('should have nothing in the output for a while once more')
         time.sleep(0.5)
         assert client.poll() == (b'', None)
 
-        # Now send the signal for the second time
+        LOGGER.info('sending signal for the second time')
         client.send_signal(int(signal.SIGUSR1))
         time.sleep(0.5)
         assert client.poll() == (b'finished\n', None)
 
+        LOGGER.info('polling for the returncode')
         time.sleep(0.5)
-        s1 = client.poll()
-        s2 = client.poll()
-        s3 = client.poll()
-        LOGGER.info("s1, s2, s3 = %r", (s1, s2, s3))
         assert client.poll() == (b'', 42)
 
-        # thread should take a while to die
+        LOGGER.info('thread should take a while to die')
         assert thread.is_alive()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+        # should still have the returncode
+        assert client.poll() == (b'', 42)
 
 
     def test_happy_input(self, tmp_path: Path):
