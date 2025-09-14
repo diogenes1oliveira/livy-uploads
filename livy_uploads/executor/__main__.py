@@ -7,6 +7,7 @@ import sys
 from livy_uploads.executor.client import LivyExecutorClient
 from livy_uploads.executor.cluster import get_winsize
 from livy_uploads.utils import assert_type
+from livy_uploads.executor.signals import parse_signal
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,7 +27,9 @@ def main():
     parser.add_argument('--worker-port', type=int, default=0, help='Port the worker server will listen on (0 for auto)')
     parser.add_argument('--worker-hostname', help='Advertised worker hostname, defaults to the FQDN')
     parser.add_argument('--bind-address', default='0.0.0.0', help='Override the address to bind the worker to')
-    
+    parser.add_argument('--stop-signal', type=parse_signal, help='Signal to send to the process to stop it')
+    parser.add_argument('--max-stop-count', type=int, default=2, help='Maximum number of stop signals to send to the process before sending SIGKILL')
+
     # Command and its arguments as positional arguments (must be last)
     parser.add_argument('command', help='The command to run')
     parser.add_argument('command_args', nargs='*', help='Arguments to pass to the command')
@@ -88,6 +91,8 @@ def main():
         worker_port=args.worker_port,
         worker_hostname=args.worker_hostname,
         bind_address=args.bind_address,
+        stop_signal=args.stop_signal,
+        max_stop_count=args.max_stop_count,
     )
     returncode = monitor.run(
         stdin=sys.stdin.buffer if args.stdin else None,

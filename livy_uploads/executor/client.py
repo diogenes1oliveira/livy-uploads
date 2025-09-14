@@ -26,7 +26,7 @@ from livy_uploads.session import LivySession
 from livy_uploads.utils import assert_type
 from livy_uploads.retry_policy import TimeoutRetryPolicy
 from livy_uploads.executor.console import Console, LineConsole, RawConsole
-from livy_uploads.executor.signals import SignalMonitor
+from livy_uploads.executor.signals import SignalMonitor, signame
 
 LOGGER = logging.getLogger(__name__)
 
@@ -139,6 +139,8 @@ class LivyExecutorClient:
         worker_port: Optional[int] = 0,
         worker_hostname: Optional[str] = None,
         bind_address: Optional[str] = '0.0.0.0',
+        stop_signal: Optional[Union[int, signal.Signals]] = None,
+        max_stop_count: Optional[int] = 2,
     ) -> 'WorkerMonitor':
         '''
         Args:
@@ -151,8 +153,11 @@ class LivyExecutorClient:
             worker_port: The port the worker server will listen on. If 0, a free port will be chosen.
             worker_hostname: The advertised worker hostname. If not provided, the FQDN will be used.
             bind_address: The address to bind to. If not provided, defaults to `0.0.0.0`.
+            stop_signal: The signal to send to the worker to gracefully stop it. If not provided, defaults to `SIGTERM`.
+            max_stop_count: The maximum number of stop signals to send to the worker before sending SIGKILL.
         '''
         stdin = True if stdin is None else stdin
+        stop_signal = int(stop_signal) if stop_signal is not None else signal.SIGTERM
 
         if tty_size is not None:
             env = env or {}
@@ -181,6 +186,8 @@ class LivyExecutorClient:
             http_client=self.http_client,
             stop_timeout=self.stop_timeout,
             kill_timeout=self.kill_timeout,
+            stop_signal=stop_signal,
+            max_stop_count=max_stop_count,
         )
 
 
@@ -197,12 +204,16 @@ class WorkerMonitor:
         http_client: Optional[BaseHttpClient] = None,
         stop_timeout: Optional[float] = None,
         kill_timeout: Optional[float] = None,
+        stop_signal: Optional[int] = None,
+        max_stop_count: Optional[int] = 2,
     ):
         self.http_client = http_client or RequestsHttpClient()
         self.pause = pause or 1.0
         self.stop_timeout = stop_timeout or 10.0
         self.kill_timeout = kill_timeout or 2.0
         self.bufsize = bufsize or 4096
+        self.max_stop_count = max_stop_count or 2
+        self.stop_signal = int(stop_signal) if stop_signal is not None else int(signal.SIGTERM)
         self.client = WorkerClient(
             url=url,
             bufsize=bufsize,
@@ -235,9 +246,14 @@ class WorkerMonitor:
             if tty is not True:
                 tty = False
 
-        signals_monitor = SignalMonitor(pause=self.pause)
-        if bind_signals is not False:
-            signals_monitor.setup()
+        bind_signals = True if bind_signals is None else bind_signals
+        signals_monitor = SignalMonitor(
+            signals=None if bind_signals else [],
+            pause=self.pause,
+            stop_signal=self.stop_signal,
+            max_stop_count=self.max_stop_count,
+        )
+        signals_monitor.setup()
         signals_thread = threading.Thread(target=self._receive_signals, args=(signals_monitor, console, tty), daemon=True)
         signals_thread.start()
 
@@ -254,6 +270,7 @@ class WorkerMonitor:
                 while not self._done.is_set():
                     result = self.client.poll()
                     if result.returncode is not None:
+                        LOGGER.debug('worker process exited with code %d', result.returncode)
                         return result.returncode
 
                     if result.stdout and stdout:
@@ -266,57 +283,67 @@ class WorkerMonitor:
             signals_thread.join(timeout=self.kill_timeout)
             if signals_thread.is_alive():
                 raise RuntimeError('failed to kill signals thread')
+            signals_monitor.close()
             if stdin_thread:
                 stdin_thread.join(timeout=self.kill_timeout)
                 if stdin_thread.is_alive():
                     raise RuntimeError('failed to kill stdin thread')
 
     def _receive_signals(self, signals_monitor: SignalMonitor, console: Optional[Console], tty: bool) -> None:
+        stopped_at: Optional[float] = None
+
         try:
             if tty and not console:
                 raise ValueError('console is None and tty is True')
 
-            try:
-                while not self._done.is_set():
+            while not self._done.is_set():
+                if stopped_at is not None and time.monotonic() - stopped_at > self.stop_timeout:
+                    LOGGER.warning('stop timeout reached, sending SIGKILL')
+                    self.client.send_signal(signal.SIGKILL, None)
+                    break
+
+                try:
+                    sig = signals_monitor.next_signal()
+                except EOFError:
+                    LOGGER.info('signals monitor closed')
+                    break
+                except TimeoutError:
+                    continue
+
+                if sig == self.stop_signal and stopped_at is None:
+                    stopped_at = time.monotonic()
+
+                if sig == signal.SIGWINCH and tty and console:
                     try:
-                        sig = signals_monitor.next_signal()
-                    except EOFError:
-                        LOGGER.info('signals monitor closed')
-                        break
-                    except TimeoutError:
-                        continue
-
-                    if sig == signal.SIGWINCH and tty and console:
-                        try:
-                            tty_size = console.tty_size
-                        except NotImplementedError:
-                            tty_size = None
-                    else:
+                        tty_size = console.tty_size
+                    except NotImplementedError:
                         tty_size = None
+                else:
+                    tty_size = None
 
-                    LOGGER.debug('sending signal %s (tty_size: %s)', sig, tty_size)
-                    self.client.send_signal(int(sig), tty_size)
-            except KeyboardInterrupt:
-                pass
+                LOGGER.debug('sending signal %r (tty_size: %s)', signame(sig), tty_size)
+                self.client.send_signal(int(sig), tty_size)
         except Exception:
             LOGGER.exception('failed to receive signals')
             self._done.set()
         finally:
-            signals_monitor.close()
+            LOGGER.debug('signals thread done')
 
     def _receive_stdin(self, console: Console) -> None:
         try:
-            try:
-                while not self._done.is_set():
-                    try:
-                        data = console.read()
-                    except EOFError:
-                        self.client.write_stdin(b'')
-                    else:
-                        if data:
-                            self.client.write_stdin(data)
-            except KeyboardInterrupt:
-                pass
+            while not self._done.is_set():
+                try:
+                    data = console.read()
+                except EOFError:
+                    LOGGER.debug('sending EOF to worker')
+                    self.client.write_stdin(b'')
+                    break
+                else:
+                    if data:
+                        self.client.write_stdin(data)
         except Exception:
             LOGGER.exception('failed to receive stdin')
             self._done.set()
+        finally:
+            LOGGER.debug('stdin thread done')
+
