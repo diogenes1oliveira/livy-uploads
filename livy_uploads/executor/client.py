@@ -7,15 +7,17 @@ Client for the Livy executor.
 
 __all__ = ('LivyExecutorClient',)
 
+from contextlib import ExitStack
 import logging
 import os
 import time
+import signal
 import threading
 from typing import Any, Optional, List, Mapping, Tuple, BinaryIO, Union
 
 import requests
 
-from livy_uploads.executor.cluster import WorkerClient, get_winsize, BaseHttpClient
+from livy_uploads.executor.cluster import WorkerClient, BaseHttpClient
 from livy_uploads.executor.commands import (
     LivyPrepareMaster,
     LivyStartProcess,
@@ -24,7 +26,7 @@ from livy_uploads.session import LivySession
 from livy_uploads.utils import assert_type
 from livy_uploads.retry_policy import TimeoutRetryPolicy
 from livy_uploads.executor.console import Console, LineConsole, RawConsole
-
+from livy_uploads.executor.signals import SignalMonitor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,6 +158,7 @@ class LivyExecutorClient:
             env = env or {}
             env['TERM'] = env.get('TERM') or os.getenv('TERM') or 'xterm-256color'
 
+        LOGGER.info('my PID is %d', os.getpid())
         info = self.session.apply(LivyStartProcess(
             command=command,
             args=args,
@@ -213,21 +216,30 @@ class WorkerMonitor:
         stdin: Optional[Union[BinaryIO, Console]] = None,
         stdout: Optional[BinaryIO] = None,
         tty: Optional[bool] = None,
+        bind_signals: Optional[bool] = True,
     ) -> int:
         if stdin is None:
             console = None
+            if tty is True:
+                raise ValueError('stdin is None and tty is True')
         elif isinstance(stdin, Console):
             console = stdin
         elif stdin.isatty():
             if tty is not False:
                 console = LineConsole(stdin=stdin, max_wait=self.pause)
+                tty = True
             else:
                 console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
         else:
             console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
+            if tty is not True:
+                tty = False
 
-        # signals_thread = threading.Thread(target=self._receive_signals, args=(console,), daemon=True)
-        # signals_thread.start()
+        signals_monitor = SignalMonitor(pause=self.pause)
+        if bind_signals is not False:
+            signals_monitor.setup()
+        signals_thread = threading.Thread(target=self._receive_signals, args=(signals_monitor, console, tty), daemon=True)
+        signals_thread.start()
 
         if console:
             stdin_thread = threading.Thread(target=self._receive_stdin, args=(console,), daemon=True)
@@ -236,7 +248,9 @@ class WorkerMonitor:
             stdin_thread = None
 
         try:
-            with console:
+            with ExitStack() as stack:
+                if console:
+                    stack.enter_context(console)
                 while not self._done.is_set():
                     result = self.client.poll()
                     if result.returncode is not None:
@@ -249,38 +263,60 @@ class WorkerMonitor:
                         time.sleep(self.pause)
         finally:
             self._done.set()
-            # signals_thread.join(timeout=self.kill_timeout)
-            # if signals_thread.is_alive():
-            #     raise RuntimeError('failed to kill signals thread')
+            signals_thread.join(timeout=self.kill_timeout)
+            if signals_thread.is_alive():
+                raise RuntimeError('failed to kill signals thread')
             if stdin_thread:
                 stdin_thread.join(timeout=self.kill_timeout)
                 if stdin_thread.is_alive():
                     raise RuntimeError('failed to kill stdin thread')
 
-    def _receive_signals(self, console: Console) -> None:
+    def _receive_signals(self, signals_monitor: SignalMonitor, console: Optional[Console], tty: bool) -> None:
         try:
-            while not self._done.is_set():
-                try:
-                    sig = console.get_signal()
-                except EOFError:
-                    break
+            if tty and not console:
+                raise ValueError('console is None and tty is True')
 
-                if sig is None:
-                    continue
+            try:
+                while not self._done.is_set():
+                    try:
+                        sig = signals_monitor.next_signal()
+                    except EOFError:
+                        LOGGER.info('signals monitor closed')
+                        break
+                    except TimeoutError:
+                        continue
 
-                self.client.send_signal(sig.signum, sig.tty_size)
-        except KeyboardInterrupt:
-            pass
+                    if sig == signal.SIGWINCH and tty and console:
+                        try:
+                            tty_size = console.tty_size
+                        except NotImplementedError:
+                            tty_size = None
+                    else:
+                        tty_size = None
+
+                    LOGGER.debug('sending signal %s (tty_size: %s)', sig, tty_size)
+                    self.client.send_signal(int(sig), tty_size)
+            except KeyboardInterrupt:
+                pass
+        except Exception:
+            LOGGER.exception('failed to receive signals')
+            self._done.set()
+        finally:
+            signals_monitor.close()
 
     def _receive_stdin(self, console: Console) -> None:
         try:
-            while not self._done.is_set():
-                try:
-                    data = console.read()
-                except EOFError:
-                    self.client.write_stdin(b'')
-                else:
-                    if data:
-                        self.client.write_stdin(data)
-        except KeyboardInterrupt:
-            pass
+            try:
+                while not self._done.is_set():
+                    try:
+                        data = console.read()
+                    except EOFError:
+                        self.client.write_stdin(b'')
+                    else:
+                        if data:
+                            self.client.write_stdin(data)
+            except KeyboardInterrupt:
+                pass
+        except Exception:
+            LOGGER.exception('failed to receive stdin')
+            self._done.set()

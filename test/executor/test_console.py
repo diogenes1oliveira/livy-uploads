@@ -1,10 +1,8 @@
-from ast import Call
-from contextlib import contextmanager
 from pathlib import Path
 import os
 import threading
 import time
-from typing import BinaryIO, Callable, Iterator
+from typing import BinaryIO, Callable
 
 import pytest
 

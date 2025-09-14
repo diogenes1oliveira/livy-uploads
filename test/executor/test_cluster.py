@@ -1,17 +1,10 @@
-import base64
 import hashlib
-import io
-import re
 import logging
-import select
 import json
 import signal
 import secrets
-import subprocess
-import socket
 import threading
 import time
-import os
 from typing import Union
 from urllib.request import urlopen, Request
 from uuid import uuid4
@@ -19,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from livy_uploads.executor.cluster import WorkerServer, WorkerClient, CallbackServer, WorkerInfo, PollResult, get_free_port
+from livy_uploads.executor.cluster import WorkerServer, WorkerClient, CallbackServer, WorkerInfo
 
 LOGGER = logging.getLogger(__name__)
 
@@ -209,6 +202,14 @@ class TestWorkerHTTPServer:
         time.sleep(1)
         assert client.poll() == (b'Window size: 42x22\r\n' + prefix, None)
 
+        LOGGER.info('resizing the window')
+        client.send_signal(int(signal.SIGWINCH), (23, 43))
+        time.sleep(1)
+        client.write_stdin(b'echo "Window size: $(tput cols)x$(tput lines)"\n')
+        time.sleep(1)
+        assert client.poll() == (b'Window size: 43x23\r\n' + prefix, None)
+
+        LOGGER.info('closing the stdin')
         client.write_stdin(b'')
         time.sleep(1)
         assert client.poll() == (b'', -1)

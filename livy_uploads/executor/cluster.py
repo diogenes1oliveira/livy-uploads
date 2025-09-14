@@ -429,6 +429,16 @@ class WorkerServer(BaseServer):
     def send_signal(self, signum: int, tty_size: Optional[Tuple[int, int]] = None) -> None:
         if not self._process:
             raise IOError('Process is not running')
+        if tty_size:
+            if not self.tty_size:
+                raise ValueError('TTY is not enabled')
+            if not self._input:
+                raise IOError('Input is not open')
+            LOGGER.info('setting TTY size to %d x %d', *tty_size)
+            rows, cols = tty_size
+            winsize = struct.pack('HHHH', rows, cols, 0, 0)
+            fcntl.ioctl(self._input.fileno(), termios.TIOCSWINSZ, winsize)
+
         LOGGER.info('sending signal %d to process %d', signum, self._process.pid)
         self._process.send_signal(signum)
 

@@ -1,9 +1,8 @@
+import io
 from uuid import uuid4
 
 import pytest
 
-
-from livy_uploads.executor.cluster import PollResult
 from livy_uploads.executor.client import LivyExecutorClient
 from livy_uploads.session import LivyEndpoint, LivySession
 from livy_uploads.retry_policy import LinearRetryPolicy
@@ -20,12 +19,15 @@ class TestLivyExecutorClient:
         )
         executor.setup()
 
-        client = executor.start(
+        monitor = executor.start(
             command='echo',
             args=['Hello World!'],
+            stdin=False,
         )
-        assert client.poll() == PollResult(stdout=b'Hello World!\n', returncode=None)
-        assert client.poll() == PollResult(stdout=b'', returncode=0)
+        stdout = io.BytesIO()
+        returncode = monitor.run(stdout=stdout, bind_signals=False)
+        assert returncode == 0
+        assert stdout.getvalue() == b'Hello World!\n'
 
 
 @pytest.fixture

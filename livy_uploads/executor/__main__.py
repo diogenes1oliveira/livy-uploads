@@ -33,11 +33,21 @@ def main():
 
     args = parser.parse_args()
 
+    log_level = getattr(logging, args.log_level)
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=log_level,
         format='%(asctime)s %(levelname)s %(name)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
+    if log_level == logging.DEBUG:
+        logging.getLogger('requests').setLevel(logging.INFO)
+        logging.getLogger('urllib3').setLevel(logging.INFO)
+        logging.getLogger('requests_gssapi').setLevel(logging.INFO)
+    else:
+        logging.getLogger('requests').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('requests_gssapi').setLevel(logging.WARNING)
+
     LOGGER.info('args: %s', args)
     config = assert_type(json.load(args.config), dict)
 
