@@ -17,7 +17,7 @@ from typing import Any, Optional, List, Mapping, Tuple, BinaryIO, Union
 
 import requests
 
-from livy_uploads.executor.cluster import WorkerClient, BaseHttpClient
+from livy_uploads.executor.cluster import WorkerClient, HttpBaseClient
 from livy_uploads.executor.commands import (
     LivyPrepareMaster,
     LivyStartProcess,
@@ -31,23 +31,21 @@ from livy_uploads.executor.signals import SignalMonitor, signame
 LOGGER = logging.getLogger(__name__)
 
 
-class RequestsHttpClient(BaseHttpClient):
+class RequestsHttpClient(HttpBaseClient):
     """
     A simple client for HTTP requests using the `requests` library.
     """
 
-    def __init__(self, request_timeout: Optional[float] = None, proxy: Optional[str] = None):
-        self.request_timeout = request_timeout or 3.0
+    def __init__(self, *, timeout: Optional[float] = None, proxy: Optional[str] = None):
+        self.timeout = timeout or 3.0
         self.proxies = {'http': proxy, 'https': proxy} if proxy else {}
     
     def get(self, url: str) -> Tuple[int, Optional[bytes]]:
-        response = requests.get(url, timeout=self.request_timeout, proxies=self.proxies)
-        response.raise_for_status()
+        response = requests.get(url, timeout=self.timeout, proxies=self.proxies)
         return response.status_code, response.content
 
     def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
-        response = requests.post(url, data=data, timeout=self.request_timeout, proxies=self.proxies)
-        response.raise_for_status()
+        response = requests.post(url, data=data, timeout=self.timeout, proxies=self.proxies)
         return response.status_code, response.content
 
 
@@ -98,7 +96,7 @@ class LivyExecutorClient:
         self.kill_timeout = kill_timeout or 2.0
         self.bufsize = bufsize or 4096
         self.stdin_poll_pause = stdin_poll_pause
-        self.http_client = RequestsHttpClient(request_timeout=request_timeout, proxy=proxy)
+        self.http_client = RequestsHttpClient(timeout=request_timeout, proxy=proxy)
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'LivyExecutorClient':
@@ -205,7 +203,7 @@ class WorkerMonitor:
         url: str,
         bufsize: Optional[int] = None,
         pause: Optional[float] = None,
-        http_client: Optional[BaseHttpClient] = None,
+        http_client: Optional[HttpBaseClient] = None,
         stop_timeout: Optional[float] = None,
         kill_timeout: Optional[float] = None,
         stop_signal: Optional[int] = None,

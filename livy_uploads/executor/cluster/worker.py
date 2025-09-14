@@ -2,16 +2,11 @@
 # -*- coding: utf-8 -*-
 
 '''
-Code to execute a command in a remote cluster worker.
-
-This is module meant to be sent to a remote cluster and executed there, so don't import non-standard libraries.
+Code to execute a command in a remote cluster worker and serve the output over HTTP.
 '''
 
-__all__ = ('WorkerServer', 'WorkerClient', 'CallbackServer', 'WorkerInfo', 'PollResult', 'BaseHttpClient', 'get_free_port')
 
-import argparse
-import collections.abc
-from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import fcntl
 import json
 import logging
@@ -22,18 +17,19 @@ import re
 import select
 import shlex
 import socket
-from socketserver import ThreadingMixIn
 import struct
 import subprocess
-import sys
 import termios
 import threading
 import time
-from typing import Any, BinaryIO, Dict, Optional, List, Mapping, Callable, NamedTuple, Tuple, Type, TypeVar, Union
-from urllib.parse import ParseResult, urlparse, parse_qs
-from urllib.request import Request, urlopen, build_opener, ProxyHandler
+from typing import BinaryIO, Optional, List, Mapping, Callable, Tuple, TypeVar, Union
+from urllib.request import Request, urlopen
 
-
+from livy_uploads.executor.cluster.http import HttpBaseServer, HttpBaseHandler, HttpBuiltinClient, HttpBaseClient
+from livy_uploads.executor.cluster.model import WorkerInfo, PollResult
+from livy_uploads.executor.cluster.utils import assert_type
+from livy_uploads.executor.cluster.callback import CallbackClient
+from livy_uploads.executor.cluster.http import parse_entity
 
 T = TypeVar('T')
 
@@ -46,124 +42,9 @@ Environment variable to disable the main function even if the script is run dire
 
 HOSTNAME_PATTERN = re.compile(r'^[a-z0-9.-]+$')
 
-class WorkerInfo(NamedTuple):
-    """
-    Worker process information.
-    """
-    name: str
-    pid: int
-    url: str
-
-    @classmethod
-    def fromdict(cls, kwargs: Mapping) -> 'WorkerInfo':
-        return cls(
-            name=assert_type(kwargs['name'], str),
-            pid=assert_type(kwargs['pid'], int),
-            url=assert_type(kwargs['url'], str),
-        )
-
-    def asdict(self) -> dict:
-        return dict(self._asdict())
 
 
-class PollResult(NamedTuple):
-    stdout: bytes
-    returncode: Optional[int]
-
-
-class BaseServer(ThreadingMixIn, HTTPServer):
-    allow_reuse_address = True
-
-    def __init__(
-        self,
-        RequestHandlerClass: Type[BaseHTTPRequestHandler],
-        port: Optional[int] = 0,
-        hostname: Optional[str] = None,
-        bind_address: Optional[str] = '0.0.0.0',
-    ):
-        super().__init__(
-            server_address=(bind_address or '0.0.0.0', port or 0),
-            RequestHandlerClass=RequestHandlerClass,
-            bind_and_activate=False,
-        )
-        self._hostname = hostname or None
-        self._serve_thread: Optional[threading.Thread] = None
-
-    @property
-    def hostname(self) -> str:
-        return self._hostname or socket.getfqdn()
-
-    @property
-    def url(self) -> str:
-        if not self.server_address:
-            raise RuntimeError('Server port is not set yet')
-
-        port = self.server_address[1]
-        return f'http://{self.hostname}:{port}'
-
-    def start(self) -> None:
-        # from the original constructor
-        LOGGER.info('binding server')
-        try:
-            self.server_bind()
-            self.server_activate()
-        except:
-            self.server_close()
-            raise
-
-        LOGGER.info('serving on %s', self.url)
-        thread = threading.Thread(daemon=True, target=self.serve_forever)
-        thread.start()
-        self._serve_thread = thread
-        time.sleep(1.0)
-
-    def close(self) -> None:
-        if self._serve_thread:
-            LOGGER.info('shutting down the server')
-            self.shutdown()
-            self._serve_thread.join(timeout=2.0)
-            if self._serve_thread.is_alive():
-                raise RuntimeError('Server thread did not shut down')
-            self._serve_thread = None
-
-
-class BaseHandler(BaseHTTPRequestHandler):
-    """
-    Base class for HTTP handlers.
-    """
-
-    def send_entity(self, result: Optional[Union[str, bytes, Mapping]], status: Optional[int] = None) -> None:
-        if result is None:
-            status = status or 204
-            self.send_response(status)
-            self.end_headers()
-            return
-
-        status = status or 200
-        if isinstance(result, str):
-            data = result.encode('utf-8')
-            content_type = 'text/plain; charset=utf-8'
-        elif isinstance(result, bytes):
-            data = result
-            content_type = 'application/octet-stream'
-        elif isinstance(result, collections.abc.Mapping):
-            data = json.dumps(result).encode('utf-8')
-            content_type = 'application/json'
-        else:
-            raise TypeError(f'Invalid type for result: {type(result)}')
-
-        self.send_response(status)
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Content-Type', content_type)
-        self.end_headers()
-        self.wfile.write(data)
-
-    @property
-    def url(self) -> ParseResult:
-        return urlparse(self.path)
-
-
-class WorkerServer(BaseServer):
+class WorkerServer(HttpBaseServer):
     """
     Runs a process and serves the output over HTTP.
     """
@@ -181,7 +62,7 @@ class WorkerServer(BaseServer):
         pause: Optional[float] = None,
         kill_timeout: Optional[float] = None,
         log_dir: Optional[str] = 'var/log',
-        callback: Optional[Union[str, Callable[[WorkerInfo], None]]] = None,
+        callback: Optional[CallbackClient, Union[Callable[[WorkerInfo], None]]] = None,
         stdin: Optional[bool] = True,
         tty_size: Optional[Tuple[int, int]] = None,
         bufsize: Optional[int] = 4096,
@@ -202,7 +83,7 @@ class WorkerServer(BaseServer):
             kill_timeout: The timeout to wait for the process to terminate.
             log_dir: The directory to write the logs to. If not provided, uses a `var/log` directory.
             pause: Small pause to wait for data consistency.
-            callback: An optional callback to call when the worker starts. Might be a URL to POST the info to or a callable.
+            callback: An optional callback to send this worker info to when it starts.
             stdin: Whether to enable stdin in the process.
             tty_size: The size of the TTY to allocate for the process.
             heartbeat_timeout: The maximum timeout between two polls for the worker server.
@@ -364,19 +245,16 @@ class WorkerServer(BaseServer):
     def _send_info(self):
         info = self.info
         LOGGER.info('started worker: %s', info)
+
         if not self.callback:
             return
 
-        if callable(self.callback):
-            self.callback(info)
-        elif isinstance(self.callback, str):
-            request = Request(self.callback, data=json.dumps(info.asdict()).encode('utf-8'))
-            request.add_header('Content-Type', 'application/json')
-            with urlopen(request) as response:
-                if response.status != 204:
-                    raise IOError(f'Failed to send callback to {self.callback}')
+        if isinstance(self.callback, CallbackClient):
+            callback = self.callback.send_info
         else:
-            raise ValueError(f'Invalid callback: {self.callback}')
+            callback = self.callback
+
+        callback(info)
 
     def _write_output(self):
         assert self._process
@@ -415,7 +293,10 @@ class WorkerServer(BaseServer):
 
     def _kill(self) -> None:
         if self._process:
-            self._process.kill()
+            try:
+                self._process.kill()
+            except ProcessLookupError:
+                pass
             self._process.wait(self.pause)
         self._done.set()
 
@@ -483,7 +364,7 @@ class WorkerServer(BaseServer):
                 self._input.close()
 
 
-class WorkerHandler(BaseHandler):
+class WorkerHandler(HttpBaseHandler):
     """
     Handles HTTP requests for a worker.
 
@@ -503,9 +384,8 @@ class WorkerHandler(BaseHandler):
         if self.url.path == '/ping':
             self.send_entity('pong')
         elif self.url.path == '/stdout':
-            qs = parse_qs(self.url.query)
-            start = int((qs.get('start') or ['0'])[0])
-            size = int((qs.get('size') or ['4096'])[0])
+            start = int(self.params.get('start') or '0')
+            size = int(self.params.get('size') or '4096')
             data = self.server.get_stdout(start, size)
             self.send_entity(data)
         elif self.url.path == '/poll':
@@ -522,10 +402,9 @@ class WorkerHandler(BaseHandler):
 
     def do_POST(self) -> None:
         if self.url.path == '/signal':
-            qs = parse_qs(self.url.query)
-            signum = int((qs.get('signum') or ['0'])[0])
-            rows = int((qs.get('rows') or ['0'])[0] or 0)
-            cols = int((qs.get('cols') or ['0'])[0] or 0)
+            signum = int(self.params.get('signum') or '0')
+            rows = int(self.params.get('rows') or '0')
+            cols = int(self.params.get('cols') or '0')
             if rows and cols:
                 tty_size = (rows, cols)
             else:
@@ -533,33 +412,11 @@ class WorkerHandler(BaseHandler):
             self.server.send_signal(signum, tty_size)
             self.send_entity(None)
         elif self.url.path == '/stdin':
-            data = self.rfile.read(int(self.headers['Content-Length']))
+            data = self.read_entity(bytes) or b''
             self.server.write_stdin(data)
             self.send_entity(None)
         else:
             self.send_error(404)
-
-
-class BaseHttpClient:
-    """
-    A simple client for HTTP requests.
-
-    This default implementation uses the built-in `urllib.request` module.
-    """
-
-    def __init__(self, request_timeout: Optional[float] = None, proxy: Optional[str] = None):
-        self.request_timeout = request_timeout or 3.0
-        self.proxy = proxy
-        self._opener = build_opener(ProxyHandler({'http': self.proxy, 'https': self.proxy} if self.proxy else {}))
-
-    def get(self, url: str) -> Tuple[int, Optional[bytes]]:
-        with self._opener.open(url, timeout=self.request_timeout) as response:
-            return response.status, response.read()
-
-    def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
-        request = Request(url=url, data=data or None, method='POST')
-        with self._opener.open(request, timeout=self.request_timeout) as response:
-            return response.status, response.read()
 
 
 class WorkerClient:
@@ -571,11 +428,11 @@ class WorkerClient:
         self,
         url: str,
         bufsize: int = 4096,
-        http_client: Optional[BaseHttpClient] = None,
+        http_client: Optional[HttpBaseClient] = None,
     ):
         self.url = url
         self.bufsize = bufsize
-        self.http_client = http_client or BaseHttpClient()
+        self.http_client = http_client or HttpBuiltinClient()
         self._lock = threading.Lock()
         self._stdout_offset = 0
         self._returncode = None
@@ -606,7 +463,8 @@ class WorkerClient:
         url = f'{self.url}/poll'
         status, data = self.http_client.get(url)
         if status == 200:
-            return int(data.decode('utf8').strip())
+            text = parse_entity(data, str) or ''
+            return int(text.strip())
         elif status == 204:
             return None
         else:
@@ -614,8 +472,11 @@ class WorkerClient:
 
     def get_info(self) -> WorkerInfo:
         url = f'{self.url}/info'
-        _, data = self.http_client.get(url)
-        body = assert_type(json.loads(data.decode('utf-8')), dict)
+        response = self.http_client.get(url)
+        if not response.ok:
+            raise IOError(f'Failed to get info from {self.url}: {response.status}')
+
+        body = parse_entity(response.data, dict) or {}
         return WorkerInfo.fromdict(body)
 
     def send_signal(self, signum: int, tty_size: Optional[Tuple[int, int]] = None) -> None:
@@ -623,127 +484,16 @@ class WorkerClient:
         if tty_size:
             url += f'&rows={tty_size[0]}&cols={tty_size[1]}'
 
-        status, _ = self.http_client.post(url)
-        if not (200 <= status < 300):
+        response = self.http_client.post(url)
+        if not response.ok:
             raise IOError(f'Failed to send signal {signum} to {self.url}')
 
     def write_stdin(self, data: bytes) -> None:
         url = f'{self.url}/stdin'
-        status, _ = self.http_client.post(url, data=data)
-        if not (200 <= status < 300):
+        response = self.http_client.post(url, data=data)
+        if not response.ok:
             raise IOError(f'Failed to write stdin to {self.url}')
 
-
-class CallbackServer(BaseServer):
-    """
-    A server to receive callbacks from dynamically created workers.
-    """
-
-    def __init__(
-        self,
-        port: Optional[int] = 0,
-        bind_address: Optional[str] = '0.0.0.0',
-        hostname: Optional[str] = None,
-        pause: Optional[float] = None,
-        timeout: Optional[float] = None,
-    ):
-        '''
-        Args:
-            port: The port to listen on. If 0, a free port will be chosen.
-            bind_address: The address to bind to. If not provided, defaults to `0.0.0.0`.
-            hostname: The advertised hostname. If not provided, the FQDN will be used.
-            pause: The pause time to wait between polling the worker info.
-            timeout: The timeout to wait for the worker to be ready.
-        '''
-        super().__init__(
-            RequestHandlerClass=CallbackHandler,
-            port=port,
-            bind_address=bind_address,
-            hostname=hostname,
-        )
-        self.infos: Dict[str, WorkerInfo] = {}
-        self.pause = pause or 0.3
-        self.timeout = timeout or 20.0
-
-    def handle_info(self, info: WorkerInfo) -> None:
-        LOGGER.info('received callback info from %s: %s', info.name, info)
-        self.infos[info.name] = info
-
-    def get_info(self, name: str) -> Optional[WorkerInfo]:
-        t0 = time.time()
-        while True:
-            if time.time() - t0 > self.timeout:
-                return None
-            info = self.infos.get(name)
-            if info:
-                return info
-            time.sleep(self.pause)
-
-
-class CallbackHandler(BaseHandler):
-    """
-    Handles HTTP requests for a callback server.
-
-    Routes:
-    - `POST /info`: Receives the info from the worker.
-    - `GET /ping`: Gets a 200 OK pong response.
-    - `GET /info/<name>`: Gets the info of the worker.
-    """
-
-    server: CallbackServer
-
-    def do_GET(self) -> None:
-        if self.url.path == '/ping':
-            self.send_entity('pong')
-        elif self.url.path.startswith('/info/'):
-            name = self.url.path[len('/info/'):]
-            info = self.server.infos.get(name)
-            if info:
-                self.send_entity(info.asdict())
-            else:
-                self.send_entity({'error': f'Worker {name} not found'}, status=404)
-        else:
-            self.send_error(404)
-
-    def do_POST(self) -> None:
-        if self.url.path == '/info':
-            data = self.rfile.read(int(self.headers['Content-Length']))
-            body = assert_type(json.loads(data), dict)
-            info = WorkerInfo.fromdict(body)
-            self.server.handle_info(info)
-            self.send_entity(None)
-        else:
-            self.send_error(404)
-
-
-def get_free_port() -> int:
-    '''
-    Returns a free port on the local machine.
-    '''
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(('localhost', 0))
-        return s.getsockname()[1]
-
-
-def assert_type(value: Any, expected_type: Type[T]) -> T:
-    try:
-        origin = getattr(expected_type, '__origin__')
-        if origin is Union:
-            args = expected_type.__args__
-            if len(args) == 2 and args[1] is type(None):
-                nullable = True
-                expected_type = args[0]
-    except AttributeError:
-        nullable = False
-
-    if nullable and value is None:
-        return value
-
-    if not isinstance(value, expected_type):
-        raise ValueError(f'Expected {expected_type}, got {type(value)}')
-
-    return value
 
 
 def get_winsize(fd: int) -> Tuple[int, int]:
@@ -755,63 +505,12 @@ def get_winsize(fd: int) -> Tuple[int, int]:
     return rows, cols
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--log-level', choices=['DEBUG', 'INFO', 'WARNING'], default='INFO')
-    subparsers = parser.add_subparsers(dest='subcommand')
+def get_free_port() -> int:
+    '''
+    Returns a free port on the local machine.
+    '''
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('localhost', 0))
+        return s.getsockname()[1]
 
-    run_parser = subparsers.add_parser('run')
-    run_parser.add_argument('-n', '--name', type=str, required=True)
-    run_parser.add_argument('-e', '--env', type=str, nargs='*', action='append')
-    run_parser.add_argument('--cwd', type=str)
-    run_parser.add_argument('-p', '--port', type=int)
-    run_parser.add_argument('--bind-address', type=str)
-    run_parser.add_argument('--hostname', type=str)
-    run_parser.add_argument('-k', '--kill-timeout', type=float)
-    run_parser.add_argument('-d', '--log-dir', type=str)
-    run_parser.add_argument('command', type=str)
-    run_parser.add_argument('args', type=str, nargs='*')
-
-    client_parser = subparsers.add_parser('client')
-    client_parser.add_argument('-u', '--url', type=str, required=True)
-
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    )
-
-    if args.subcommand == 'run':
-        env = {}
-        for pair in args.env or []:
-            key, sep, value = pair.partition('=')
-            if not sep:
-                value = os.environ[key]
-            env[key] = value
-
-        server = WorkerServer(
-            name=args.name,
-            command=args.command,
-            args=args.args,
-            env=env,
-            cwd=args.cwd,
-            port=args.port,
-            bind_address=args.bind_address,
-            hostname=args.hostname,
-            log_dir=args.log_dir,
-        )
-        server.run()
-    elif args.subcommand == 'client':
-        client = WorkerClient(
-            url=args.url,
-        )
-        returncode = client.run()
-        sys.exit(returncode)
-    else:
-        raise ValueError(f'Invalid subcommand: {args.subcommand!r}')
-
-
-if __name__ == '__main__' and not os.environ.get(ENV_DISABLE_MAIN):
-    main()

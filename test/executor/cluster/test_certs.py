@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from livy_uploads.executor.certs import CertManager
+from livy_uploads.executor.cluster.certs import CertManager
 
 
 class TestCertManager:

@@ -54,23 +54,24 @@ class LivyPrepareMaster(LivyCommand[str]):
             ),
             code='''
                 spark.sparkContext.addPyFile(pyfile)
-                from livy_uploads.executor.cluster import CallbackServer
+                from livy_uploads.executor.cluster import CallbackServer, CallbackClient
 
                 try:
-                    callback_server
-                    started = False
+                    callback_client
+                    started_now = False
                 except NameError:
                     callback_server = CallbackServer()
                     callback_server.start()
-                    started = True
+                    callback_client = CallbackClient(callback_server.url)
+                    started_now = True
 
-                _ = callback_server.url, started
+                _ = callback_server.url, started_now
             ''',
         )
-        _, (url, started) = command.run(session)
+        _, (url, started_now) = command.run(session)
         url: str
-        started: bool
-        LOGGER.info('callback server %s at %s', 'started' if started else 'already running', url)
+        started_now: bool
+        LOGGER.info('callback server %s at %s', 'started' if started_now else 'already running', url)
         return url
 
 
@@ -120,7 +121,7 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
                 from livy_uploads.executor.cluster import WorkerServer
 
                 kwargs['name'] = name
-                kwargs['callback'] = callback_server.url.rstrip('/') + '/info'
+                kwargs['callback'] = callback_client
 
                 def {fname}_worker(kwargs):
                     logging.basicConfig(

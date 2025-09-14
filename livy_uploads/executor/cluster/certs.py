@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+'''
+Code to manage the certificates for the server and workers.
+'''
+
+__all__ = ('CertManager',)
+
+
 from contextlib import ExitStack
 import logging
 from pathlib import Path
@@ -6,6 +16,7 @@ import subprocess
 import tempfile
 import textwrap
 from typing import Optional, List, Tuple
+
 
 HOSTNAME_PATTERN = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$')
 
