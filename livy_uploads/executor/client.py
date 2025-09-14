@@ -8,6 +8,7 @@ Client for the Livy executor.
 __all__ = ('LivyExecutorClient',)
 
 import logging
+import os
 import time
 import threading
 from typing import Any, Optional, List, Mapping, Tuple, BinaryIO, Union
@@ -22,7 +23,7 @@ from livy_uploads.executor.commands import (
 from livy_uploads.session import LivySession
 from livy_uploads.utils import assert_type
 from livy_uploads.retry_policy import TimeoutRetryPolicy
-from livy_uploads.executor.console import Console, TTYConsole, LineConsole, ChunkedConsole, NullConsole
+from livy_uploads.executor.console import Console, LineConsole, RawConsole
 
 
 LOGGER = logging.getLogger(__name__)
@@ -151,6 +152,10 @@ class LivyExecutorClient:
         '''
         stdin = True if stdin is None else stdin
 
+        if tty_size is not None:
+            env = env or {}
+            env['TERM'] = env.get('TERM') or os.getenv('TERM') or 'xterm-256color'
+
         info = self.session.apply(LivyStartProcess(
             command=command,
             args=args,
@@ -210,21 +215,21 @@ class WorkerMonitor:
         tty: Optional[bool] = None,
     ) -> int:
         if stdin is None:
-            console = NullConsole()
+            console = None
         elif isinstance(stdin, Console):
             console = stdin
         elif stdin.isatty():
             if tty is not False:
-                console = TTYConsole(stdin=stdin, bufsize=self.bufsize, pause=self.pause)
+                console = LineConsole(stdin=stdin, max_wait=self.pause)
             else:
-                console = LineConsole(stdin=stdin, pause=self.pause)
+                console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
         else:
-            console = ChunkedConsole(stdin=stdin, bufsize=self.bufsize, pause=self.pause)
+            console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
 
-        signals_thread = threading.Thread(target=self._receive_signals, args=(console,), daemon=True)
-        signals_thread.start()
+        # signals_thread = threading.Thread(target=self._receive_signals, args=(console,), daemon=True)
+        # signals_thread.start()
 
-        if stdin:
+        if console:
             stdin_thread = threading.Thread(target=self._receive_stdin, args=(console,), daemon=True)
             stdin_thread.start()
         else:
@@ -244,9 +249,9 @@ class WorkerMonitor:
                         time.sleep(self.pause)
         finally:
             self._done.set()
-            signals_thread.join(timeout=self.kill_timeout)
-            if signals_thread.is_alive():
-                raise RuntimeError('failed to kill signals thread')
+            # signals_thread.join(timeout=self.kill_timeout)
+            # if signals_thread.is_alive():
+            #     raise RuntimeError('failed to kill signals thread')
             if stdin_thread:
                 stdin_thread.join(timeout=self.kill_timeout)
                 if stdin_thread.is_alive():
