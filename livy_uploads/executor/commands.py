@@ -9,6 +9,8 @@ __all__ = ('LivyPrepareMaster', 'LivyStartProcess')
 
 
 import logging
+from struct import pack
+from tempfile import TemporaryDirectory
 from typing import List, Optional, Tuple, TypeVar, Mapping
 from uuid import uuid4
 
@@ -16,10 +18,11 @@ from livy_uploads.commands import LivyRunCode, LivyUploadFile
 from livy_uploads.executor import cluster
 from livy_uploads.executor.cluster import WorkerInfo
 from livy_uploads.session import LivySession, LivyCommand
-
+from livy_uploads.pack import pack_package
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar('T')
+PACKAGE = __name__.split('.')[0]
 
 
 class LivyPrepareMaster(LivyCommand[str]):
@@ -31,19 +34,27 @@ class LivyPrepareMaster(LivyCommand[str]):
         '''
         Executes the upload
         '''
-        LOGGER.info('sending the cluster code')
-        LivyUploadFile(
-            source_path=cluster.__file__,
-            dest_path='livy_uploads_executor_cluster.py',
-            chunk_size=1024,
-            mode=0o644,
-        ).run(session)
+        LOGGER.info('packing the package code in %r', PACKAGE)
+        with TemporaryDirectory() as tmpdir:
+            package_zip = pack_package(PACKAGE, tmpdir)
+            pyfile = package_zip.name
+
+            LOGGER.info('sending the package code')
+            LivyUploadFile(
+                source_path=package_zip,
+                dest_path=pyfile,
+                chunk_size=1024,
+                mode=0o644,
+            ).run(session)
 
         LOGGER.info('starting the callback server')
         command = LivyRunCode(
+            vars=dict(
+                pyfile=pyfile,
+            ),
             code='''
-                spark.sparkContext.addPyFile('livy_uploads_executor_cluster.py')
-                from livy_uploads_executor_cluster import CallbackServer
+                spark.sparkContext.addPyFile(pyfile)
+                from livy_uploads.executor.cluster import CallbackServer
 
                 try:
                     callback_server
@@ -106,7 +117,7 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
             code=f'''
                 import logging
                 from pyspark import InheritableThread
-                from livy_uploads_executor_cluster import WorkerServer
+                from livy_uploads.executor.cluster import WorkerServer
 
                 kwargs['name'] = name
                 kwargs['callback'] = callback_server.url.rstrip('/') + '/info'
