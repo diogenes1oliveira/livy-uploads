@@ -162,6 +162,45 @@ class TestWorkerHTTPServer:
         thread.join(timeout=5)
         assert not thread.is_alive()
 
+    def test_tty(self, tmp_path: Path):
+        name = str(uuid4())
+        ps1 = f'({name}) >'
+        started = threading.Event()
+        worker = WorkerServer(
+            name=name,
+            command='bash',
+            args=['-c', """
+                echo "Window size: $(tput cols)x$(tput lines)"
+            """],
+            env={
+                'PS1': ps1,
+                'TERM': 'xterm-256color',
+            },
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            tty_size=(22, 42),
+            callback=lambda _: started.set(),
+        )
+
+        thread = threading.Thread(daemon=True, target=worker.run)
+        thread.start()
+
+        if not started.wait(timeout=5):
+            pytest.fail('worker did not start')
+
+        client = WorkerClient(worker.url)
+
+        time.sleep(1)
+        assert client.poll() == (b'Window size: 42x22\r\n', None)
+
+        time.sleep(1)
+        assert client.poll() == (b'', 0)
+
+        # thread should take a while to die
+        assert thread.is_alive()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
 
 class TestCallbackServer:
     @pytest.fixture

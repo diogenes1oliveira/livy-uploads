@@ -33,6 +33,7 @@ from urllib.parse import ParseResult, urlparse, parse_qs
 from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 
+
 T = TypeVar('T')
 
 LOGGER = logging.getLogger('livy_uploads.executor.cluster')
@@ -227,6 +228,8 @@ class WorkerServer(BaseServer):
         self._fp: Optional[BinaryIO] = None
         self._done = threading.Event()
         self._stdin_lock = threading.Lock()
+        self._input: Optional[BinaryIO] = None
+        self._output: Optional[BinaryIO] = None
         self._out_thread: Optional[threading.Thread] = None
 
     @property
@@ -258,17 +261,42 @@ class WorkerServer(BaseServer):
         self.cwd.absolute().mkdir(parents=True, exist_ok=True)
         self._fp = open(self.log_file, 'wb')
 
+        if not self.tty_size:
+            kwargs = dict(
+                stdin=subprocess.PIPE if self.stdin else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+        else:
+            master, slave = pty.openpty()
+            rows, cols = self.tty_size
+            winsize = struct.pack('HHHH', rows, cols, 0, 0)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, winsize)
+
+            kwargs = dict(
+                stdin=slave if self.stdin else subprocess.DEVNULL,
+                stdout=slave,
+                stderr=slave,
+            )
+
         LOGGER.info('starting the process')
         self._process = subprocess.Popen(
             [*shlex.split(self.command), *self.args],
             env=self.env,
             cwd=self.cwd,
-            stdin=subprocess.PIPE if self.stdin else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            **kwargs,
         )
 
-        self._out_thread = threading.Thread(target=self._write_output, args=(self._process.stdout,))
+        if not self.tty_size:
+            self._output = self._process.stdout
+            if self.stdin:
+                self._input = self._process.stdin
+        else:
+            self._output = os.fdopen(master, 'rb')
+            if self.stdin:
+                self._input = os.fdopen(master, 'wb')
+
+        self._out_thread = threading.Thread(target=self._write_output)
         self._out_thread.start()
 
         try:
@@ -343,15 +371,16 @@ class WorkerServer(BaseServer):
         else:
             raise ValueError(f'Invalid callback: {self.callback}')
 
-    def _write_output(self, rpipe: BinaryIO):
+    def _write_output(self):
         assert self._process
-        os.set_blocking(rpipe.fileno(), False)
+
+        os.set_blocking(self._output.fileno(), False)
 
         while True:
-            rlist, _, _ = select.select([rpipe], [], [], self.pause)
+            rlist, _, _ = select.select([self._output], [], [], self.pause)
             if rlist:
                 try:
-                    data = rpipe.read(self.bufsize)
+                    data = self._output.read(self.bufsize)
                 except BlockingIOError:
                     data = None
             else:
@@ -399,6 +428,8 @@ class WorkerServer(BaseServer):
     def write_stdin(self, data: bytes) -> None:
         if not self._process:
             raise IOError('Process is not running')
+        if not self._input:
+            raise IOError('Input is not open')
 
         with self._stdin_lock:
             if data:
