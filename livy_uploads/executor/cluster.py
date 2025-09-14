@@ -17,6 +17,8 @@ import json
 import logging
 import os
 from pathlib import Path
+import pty
+import select
 import shlex
 import socket
 from socketserver import ThreadingMixIn
@@ -175,10 +177,12 @@ class WorkerServer(BaseServer):
         bind_address: Optional[str] = '0.0.0.0',
         hostname: Optional[str] = None,
         pause: Optional[float] = None,
+        kill_timeout: Optional[float] = None,
         log_dir: Optional[str] = 'var/log',
         callback: Optional[Union[str, Callable[[WorkerInfo], None]]] = None,
         stdin: Optional[bool] = True,
         tty_size: Optional[Tuple[int, int]] = None,
+        bufsize: Optional[int] = 4096,
     ):
         '''
         Args:
@@ -192,6 +196,7 @@ class WorkerServer(BaseServer):
             hostname: The advertised hostname. If not provided, the FQDN will be used.
             bufsize: The buffer size to use for reading the command output.
             pause: The pause time to wait for data in the command output.
+            kill_timeout: The timeout to wait for the process to terminate.
             log_dir: The directory to write the logs to. If not provided, uses a `var/log` directory.
             pause: Small pause to wait for data consistency.
             callback: An optional callback to call when the worker starts. Might be a URL to POST the info to or a callable.
@@ -215,11 +220,14 @@ class WorkerServer(BaseServer):
         self.callback = callback
         self.stdin = stdin if stdin is not None else True
         self.tty_size = tty_size or None
+        self.bufsize = bufsize or 4096
+        self.kill_timeout = kill_timeout or 2.0
         self._process: Optional[subprocess.Popen] = None
         self._server_is_open = False
         self._fp: Optional[BinaryIO] = None
         self._done = threading.Event()
         self._stdin_lock = threading.Lock()
+        self._out_thread: Optional[threading.Thread] = None
 
     @property
     def info(self) -> WorkerInfo:
@@ -256,24 +264,15 @@ class WorkerServer(BaseServer):
             env=self.env,
             cwd=self.cwd,
             stdin=subprocess.PIPE if self.stdin else subprocess.DEVNULL,
-            stdout=self._fp,
-            stderr=self._fp,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
 
+        self._out_thread = threading.Thread(target=self._write_output, args=(self._process.stdout,))
+        self._out_thread.start()
+
         try:
-            info = self.info
-            LOGGER.info('started worker: %s', info)
-            if self.callback:
-                if callable(self.callback):
-                    self.callback(info)
-                elif isinstance(self.callback, str):
-                    request = Request(self.callback, data=json.dumps(info.asdict()).encode('utf-8'))
-                    request.add_header('Content-Type', 'application/json')
-                    with urlopen(request) as response:
-                        if response.status != 204:
-                            raise IOError(f'Failed to send callback to {self.callback}')
-                else:
-                    raise ValueError(f'Invalid callback: {self.callback}')
+            self._send_info()
         except Exception:
             self._kill()
             raise
@@ -288,6 +287,12 @@ class WorkerServer(BaseServer):
         if self._process:
             LOGGER.info('killing the process')
             self._kill()
+
+        if self._out_thread:
+            self._out_thread.join(timeout=self.kill_timeout)
+            if self._out_thread.is_alive():
+                raise RuntimeError('out thread did not shut down')
+            self._out_thread = None
 
         if self._fp:
             LOGGER.info('removing the log file')
@@ -320,6 +325,45 @@ class WorkerServer(BaseServer):
             return returncode
         finally:
             self.close()
+
+    def _send_info(self):
+        info = self.info
+        LOGGER.info('started worker: %s', info)
+        if not self.callback:
+            return
+
+        if callable(self.callback):
+            self.callback(info)
+        elif isinstance(self.callback, str):
+            request = Request(self.callback, data=json.dumps(info.asdict()).encode('utf-8'))
+            request.add_header('Content-Type', 'application/json')
+            with urlopen(request) as response:
+                if response.status != 204:
+                    raise IOError(f'Failed to send callback to {self.callback}')
+        else:
+            raise ValueError(f'Invalid callback: {self.callback}')
+
+    def _write_output(self, rpipe: BinaryIO):
+        assert self._process
+        os.set_blocking(rpipe.fileno(), False)
+
+        while True:
+            rlist, _, _ = select.select([rpipe], [], [], self.pause)
+            if rlist:
+                try:
+                    data = rpipe.read(self.bufsize)
+                except BlockingIOError:
+                    data = None
+            else:
+                data = None
+
+            if not data:
+                if self._process.poll() is not None:
+                    break
+                continue
+
+            self._fp.write(data)
+            self._fp.flush()
 
     def _kill(self) -> None:
         if self._process:
