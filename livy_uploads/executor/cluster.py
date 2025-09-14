@@ -20,6 +20,7 @@ from pathlib import Path
 import pty
 import select
 import shlex
+import signal
 import socket
 from socketserver import ThreadingMixIn
 import struct
@@ -184,6 +185,7 @@ class WorkerServer(BaseServer):
         stdin: Optional[bool] = True,
         tty_size: Optional[Tuple[int, int]] = None,
         bufsize: Optional[int] = 4096,
+        heartbeat_timeout: Optional[float] = None,
     ):
         '''
         Args:
@@ -203,6 +205,7 @@ class WorkerServer(BaseServer):
             callback: An optional callback to call when the worker starts. Might be a URL to POST the info to or a callable.
             stdin: Whether to enable stdin in the process.
             tty_size: The size of the TTY to allocate for the process.
+            heartbeat_timeout: The maximum timeout between two polls for the worker server.
         '''
         super().__init__(
             RequestHandlerClass=WorkerHandler,
@@ -223,6 +226,7 @@ class WorkerServer(BaseServer):
         self.tty_size = tty_size or None
         self.bufsize = bufsize or 4096
         self.kill_timeout = kill_timeout or 2.0
+        self.heartbeat_timeout = heartbeat_timeout or 15.0
         self._process: Optional[subprocess.Popen] = None
         self._server_is_open = False
         self._fp: Optional[BinaryIO] = None
@@ -231,6 +235,7 @@ class WorkerServer(BaseServer):
         self._input: Optional[BinaryIO] = None
         self._output: Optional[BinaryIO] = None
         self._out_thread: Optional[threading.Thread] = None
+        self._last_poll_time: Optional[float] = None
 
     @property
     def info(self) -> WorkerInfo:
@@ -297,6 +302,7 @@ class WorkerServer(BaseServer):
             if self.stdin:
                 self._input = os.fdopen(master, 'wb')
 
+        self._last_poll_time = time.monotonic()
         self._out_thread = threading.Thread(target=self._write_output)
         self._out_thread.start()
 
@@ -348,7 +354,7 @@ class WorkerServer(BaseServer):
         self.start()
         try:
             self.wait()
-            returncode = self._process.returncode
+            returncode = self._process.poll()
             if returncode is None:
                 raise RuntimeError('Process did not finish')
             return returncode
@@ -374,10 +380,17 @@ class WorkerServer(BaseServer):
 
     def _write_output(self):
         assert self._process
+        assert self._last_poll_time is not None
 
         os.set_blocking(self._output.fileno(), False)
+        killed = False
 
         while True:
+            if time.monotonic() - self._last_poll_time > self.heartbeat_timeout and not killed:
+                LOGGER.warning('heartbeat timeout reached, forcing process to exit')
+                killed = True
+                self._kill()
+
             rlist, _, _ = select.select([self._output], [], [], self.pause)
             if rlist:
                 try:
@@ -402,11 +415,17 @@ class WorkerServer(BaseServer):
             self._fp.flush()
 
     def _kill(self) -> None:
+        self._done.set()
         if self._process:
             self._process.kill()
             self._process.wait(self.pause)
 
+    def _set_polled(self) -> None:
+        self._last_poll_time = time.monotonic()
+
     def get_stdout(self, start: int = 0, size: int = 1024) -> bytes:
+        self._set_polled()
+
         with self.log_file.open('rb') as fp:
             fp.seek(start)
             data = fp.read(size)
@@ -417,6 +436,7 @@ class WorkerServer(BaseServer):
     def get_returncode(self) -> Optional[int]:
         if not self._process:
             raise IOError('Process is not running')
+        self._set_polled()
         returncode =  self._process.poll()
         if returncode is not None:
             LOGGER.info('process %d finished with returncode %d', self._process.pid, returncode)
@@ -435,9 +455,12 @@ class WorkerServer(BaseServer):
             if not self._input:
                 raise IOError('Input is not open')
             LOGGER.info('setting TTY size to %d x %d', *tty_size)
+            self._set_polled()
             rows, cols = tty_size
             winsize = struct.pack('HHHH', rows, cols, 0, 0)
             fcntl.ioctl(self._input.fileno(), termios.TIOCSWINSZ, winsize)
+        else:
+            self._set_polled()
 
         LOGGER.info('sending signal %d to process %d', signum, self._process.pid)
         self._process.send_signal(signum)
@@ -447,6 +470,8 @@ class WorkerServer(BaseServer):
             raise IOError('Process is not running')
         if not self._input:
             raise IOError('Input is not open')
+
+        self._set_polled()
 
         with self._stdin_lock:
             if data:

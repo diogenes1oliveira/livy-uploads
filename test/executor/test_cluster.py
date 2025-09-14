@@ -17,7 +17,7 @@ from livy_uploads.executor.cluster import WorkerServer, WorkerClient, CallbackSe
 LOGGER = logging.getLogger(__name__)
 
 
-class TestWorkerHTTPServer:
+class TestWorkerServer:
     def test_happy_output(self, tmp_path: Path):
         name = str(uuid4())
         started = threading.Event()
@@ -218,6 +218,42 @@ class TestWorkerHTTPServer:
         assert thread.is_alive()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+
+    def test_heartbeat_timeout(self, tmp_path: Path):
+        name = str(uuid4())
+        started = threading.Event()
+        worker = WorkerServer(
+            name=name,
+            command='bash',
+            args=['-c', 'sleep 10'],
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            heartbeat_timeout=2.0,
+            callback=lambda _: started.set(),
+        )
+
+        thread = threading.Thread(daemon=True, target=worker.run)
+        thread.start()
+
+        if not started.wait(timeout=5):
+            pytest.fail('worker did not start')
+
+        client = WorkerClient(worker.url)
+
+        time.sleep(1)
+        assert client.get_returncode() is None
+        time.sleep(1)
+        assert client.get_returncode() is None
+
+        time.sleep(3)
+        assert worker._process.poll() == -9
+
+        # thread should take a while to die
+        assert thread.is_alive()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
 
 
 class TestCallbackServer:
