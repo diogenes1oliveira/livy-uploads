@@ -18,9 +18,9 @@ import logging
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shlex
-import signal
 import socket
 from socketserver import ThreadingMixIn
 import struct
@@ -44,7 +44,7 @@ ENV_DISABLE_MAIN = 'LIVY_UPLOADS_EXECUTOR_DISABLE_MAIN'
 Environment variable to disable the main function even if the script is run directly.
 '''
 
-
+HOSTNAME_PATTERN = re.compile(r'^[a-z0-9.-]+$')
 
 class WorkerInfo(NamedTuple):
     """
