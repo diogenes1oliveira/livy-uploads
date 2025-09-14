@@ -165,16 +165,16 @@ class TestWorkerHTTPServer:
     def test_tty(self, tmp_path: Path):
         name = str(uuid4())
         ps1 = f'({name}) >'
+        prefix = ps1.encode('utf8')
         started = threading.Event()
         worker = WorkerServer(
             name=name,
             command='bash',
-            args=['-c', """
-                echo "Window size: $(tput cols)x$(tput lines)"
-            """],
+            args=['--norc', '--noprofile', '-i'],
             env={
                 'PS1': ps1,
                 'TERM': 'xterm-256color',
+                'INPUTRC': '/dev/null',
             },
             hostname='localhost',
             log_dir=str(tmp_path),
@@ -190,11 +190,28 @@ class TestWorkerHTTPServer:
 
         client = WorkerClient(worker.url)
 
-        time.sleep(1)
-        assert client.poll() == (b'Window size: 42x22\r\n', None)
+        LOGGER.info('preparing the prompt')
+        client.write_stdin(b"stty -echo && bind 'set enable-bracketed-paste off'\r\n")
+        buf = b''
+        while True:
+            output, returncode = client.poll()
+            assert returncode is None
+            if not output:
+                break
+            buf += output
 
+        LOGGER.info('sending a test command')
+        client.write_stdin(b'true\n')
+        assert client.poll() == (prefix, None)
+
+        LOGGER.info('testing the window size')
+        client.write_stdin(b'echo "Window size: $(tput cols)x$(tput lines)"\n')
         time.sleep(1)
-        assert client.poll() == (b'', 0)
+        assert client.poll() == (b'Window size: 42x22\r\n' + prefix, None)
+
+        client.write_stdin(b'')
+        time.sleep(1)
+        assert client.poll() == (b'', -1)
 
         # thread should take a while to die
         assert thread.is_alive()

@@ -277,6 +277,7 @@ class WorkerServer(BaseServer):
                 stdin=slave if self.stdin else subprocess.DEVNULL,
                 stdout=slave,
                 stderr=slave,
+                preexec_fn=os.setsid,
             )
 
         LOGGER.info('starting the process')
@@ -383,6 +384,12 @@ class WorkerServer(BaseServer):
                     data = self._output.read(self.bufsize)
                 except BlockingIOError:
                     data = None
+                except OSError as e:
+                    # check if it's a bad file descriptor error
+                    if e.errno == 9:
+                        LOGGER.info('process %d closed stdout', self._process.pid)
+                        break
+                    raise
             else:
                 data = None
 
@@ -435,11 +442,11 @@ class WorkerServer(BaseServer):
             if data:
                 log_data = data if len(data) < 50 else data[:50] + b'...'
                 LOGGER.debug('writing %d bytes to stdin: %s', len(data), log_data)
-                self._process.stdin.write(data)
-                self._process.stdin.flush()
+                self._input.write(data)
+                self._input.flush()
             else:
                 LOGGER.info('closing stdin')
-                self._process.stdin.close()
+                self._input.close()
 
 
 class WorkerHandler(BaseHandler):
