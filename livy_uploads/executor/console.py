@@ -1,13 +1,27 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+'''
+Implementations to interruptibly read from the console input.
+'''
+
+__all__ = ('Console', 'LineConsole', 'RawConsole', 'TTYConsole')
+
 from abc import ABC, abstractmethod
 import os
+import logging
 import select
 import signal
 import struct
 import fcntl
 import termios
+import time
+import tty
 import sys
 from typing import BinaryIO, Optional, Tuple
 
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Console(ABC):
@@ -43,7 +57,7 @@ class Console(ABC):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    def wait(self) -> None:
+    def wait(self):
         """
         Wait for the console to have data available.
 
@@ -143,6 +157,83 @@ class RawConsole(Console):
         return data
 
 
+class TTYConsole(Console):
+    """
+    A console implementation that reads from a TTY.
+    """
+
+    def __init__(self, stdin: Optional[BinaryIO] = None, max_wait: Optional[float] = None, bufsize: Optional[int] = 1024):
+        super().__init__(stdin, max_wait or 0.3)
+        if not self.stdin.isatty():
+            raise OSError('stdin is not a TTY')
+        self.bufsize = bufsize or 1024
+        self._old_blocking = None
+        self._old_attrs = None
+
+    def setup(self) -> None:
+        LOGGER.debug('setup TTYConsole with poll pause %s', self.max_wait)
+        self._old_blocking = os.get_blocking(self.stdin.fileno())
+        self._old_attrs = termios.tcgetattr(self.stdin.fileno())
+        tty.setraw(self.stdin.fileno())
+        os.set_blocking(self.stdin.fileno(), False)
+        super().setup()
+
+    def close(self) -> None:
+        super().close()
+        if self._old_blocking is not None:
+            os.set_blocking(self.stdin.fileno(), self._old_blocking)
+            self._old_blocking = None
+        if self._old_attrs is not None:
+            termios.tcsetattr(self.stdin.fileno(), termios.TCSADRAIN, self._old_attrs)
+            self._old_attrs = None
+
+    def read(self) -> bytes:
+        """
+        Read data from the console.
+
+        Raises:
+            - `EOFError` if the console is closed.
+        """
+        buffer = bytearray()
+        t0 = time.monotonic()
+        eof = False
+
+        while len(buffer) < self.bufsize:
+            if time.monotonic() - t0 > self.max_wait:
+                break
+
+            try:
+                self.wait()
+            except TimeoutError:
+                break
+
+            try:
+                b = self.stdin.read(1)
+            except BlockingIOError:
+                b = None
+
+            if b == b'':
+                eof = True
+            if not b:
+                break
+
+            # got a Ctrl+C
+            if b == b'\x03':
+                os.kill(os.getpid(), signal.SIGINT)
+                break
+
+            buffer.extend(b)
+            # newlines, tab key, arrow keys finish the buffer
+            if b in {b'\r', b'\n', b'\t', b'\x1b'}:
+                break
+
+        result = bytes(buffer)
+        if eof and not result:
+            raise EOFError
+
+        return result
+
+
 if __name__ == '__main__':
     import logging
     import time
@@ -152,12 +243,12 @@ if __name__ == '__main__':
 
     if sys.argv[1] == 'line':
         console = LineConsole()
-    elif sys.argv[1] == 'chunked':
-        console = ChunkedConsole(pause=1, bufsize=5)
+    elif sys.argv[1] == 'raw':
+        console = RawConsole(max_wait=1, bufsize=5)
     elif sys.argv[1] == 'tty':
-        console = TTYConsole(max_wait=1, bufsize=5)
+        console = TTYConsole(max_wait=0.3, bufsize=5)
     else:
-        console = NullConsole()
+        raise ValueError('unknown console type: %s', sys.argv[1])
 
     # def stop():
     #     time.sleep(5.0)
@@ -175,7 +266,7 @@ if __name__ == '__main__':
     # threading.Thread(target=stop, daemon=True).start()
 
     with console:
-        logging.info('reading with %s', console)
+        logging.info('reading with %s (my PID is %s)', console, os.getpid())
         while True:
             try:
                 line = console.read()

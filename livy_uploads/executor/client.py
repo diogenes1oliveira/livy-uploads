@@ -25,7 +25,7 @@ from livy_uploads.executor.commands import (
 from livy_uploads.session import LivySession
 from livy_uploads.utils import assert_type
 from livy_uploads.retry_policy import TimeoutRetryPolicy
-from livy_uploads.executor.console import Console, LineConsole, RawConsole
+from livy_uploads.executor.console import Console, LineConsole, RawConsole, TTYConsole
 from livy_uploads.executor.signals import SignalMonitor, signame
 
 LOGGER = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ class LivyExecutorClient:
         kill_timeout: Optional[float] = None,
         request_timeout: Optional[float] = None,
         proxy: Optional[str] = None,
+        stdin_poll_pause: Optional[float] = None,
     ):
         '''
         Args:
@@ -84,6 +85,7 @@ class LivyExecutorClient:
             request_timeout: The timeout to use for HTTP requests.
             bufsize: The buffer size to use for reading the command output.
             proxy: The proxy to use for polling the worker.
+            stdin_poll_pause: The pause time to wait for stdin data.
         '''
         self.session = session
         self.callback_port = callback_port or 0
@@ -95,6 +97,7 @@ class LivyExecutorClient:
         self.stop_timeout = stop_timeout or 10.0
         self.kill_timeout = kill_timeout or 2.0
         self.bufsize = bufsize or 4096
+        self.stdin_poll_pause = stdin_poll_pause
         self.http_client = RequestsHttpClient(request_timeout=request_timeout, proxy=proxy)
 
     @classmethod
@@ -188,6 +191,7 @@ class LivyExecutorClient:
             kill_timeout=self.kill_timeout,
             stop_signal=stop_signal,
             max_stop_count=max_stop_count,
+            stdin_poll_pause=self.stdin_poll_pause,
         )
 
 
@@ -206,6 +210,7 @@ class WorkerMonitor:
         kill_timeout: Optional[float] = None,
         stop_signal: Optional[int] = None,
         max_stop_count: Optional[int] = 2,
+        stdin_poll_pause: Optional[float] = None,
     ):
         self.http_client = http_client or RequestsHttpClient()
         self.pause = pause or 1.0
@@ -214,6 +219,7 @@ class WorkerMonitor:
         self.bufsize = bufsize or 4096
         self.max_stop_count = max_stop_count or 2
         self.stop_signal = int(stop_signal) if stop_signal is not None else int(signal.SIGTERM)
+        self.stdin_poll_pause = stdin_poll_pause
         self.client = WorkerClient(
             url=url,
             bufsize=bufsize,
@@ -237,14 +243,16 @@ class WorkerMonitor:
             console = stdin
         elif stdin.isatty():
             if tty is not False:
-                console = LineConsole(stdin=stdin, max_wait=self.pause)
+                console = TTYConsole(stdin=stdin, max_wait=self.stdin_poll_pause, bufsize=self.bufsize)
                 tty = True
             else:
-                console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
+                console = LineConsole(stdin=stdin, max_wait=self.stdin_poll_pause)
         else:
-            console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.pause)
             if tty is not True:
+                console = RawConsole(stdin=stdin, bufsize=self.bufsize, max_wait=self.stdin_poll_pause)
                 tty = False
+            else:
+                console = LineConsole(stdin=stdin, max_wait=self.pause)
 
         bind_signals = True if bind_signals is None else bind_signals
         signals_monitor = SignalMonitor(
