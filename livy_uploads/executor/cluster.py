@@ -383,13 +383,12 @@ class WorkerServer(BaseServer):
         assert self._last_poll_time is not None
 
         os.set_blocking(self._output.fileno(), False)
-        killed = False
 
         while True:
-            if time.monotonic() - self._last_poll_time > self.heartbeat_timeout and not killed:
+            if time.monotonic() - self._last_poll_time > self.heartbeat_timeout:
                 LOGGER.warning('heartbeat timeout reached, forcing process to exit')
-                killed = True
                 self._kill()
+                break
 
             rlist, _, _ = select.select([self._output], [], [], self.pause)
             if rlist:
@@ -415,10 +414,10 @@ class WorkerServer(BaseServer):
             self._fp.flush()
 
     def _kill(self) -> None:
-        self._done.set()
         if self._process:
             self._process.kill()
             self._process.wait(self.pause)
+        self._done.set()
 
     def _set_polled(self) -> None:
         self._last_poll_time = time.monotonic()

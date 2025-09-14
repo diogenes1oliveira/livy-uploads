@@ -250,8 +250,7 @@ class TestWorkerServer:
         assert worker._process.poll() == -9
 
         # thread should take a while to die
-        assert thread.is_alive()
-        thread.join(timeout=5)
+        thread.join(timeout=1)
         assert not thread.is_alive()
 
 
