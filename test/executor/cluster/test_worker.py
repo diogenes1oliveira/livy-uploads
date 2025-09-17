@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from livy_uploads.executor.cluster import WorkerServer, WorkerClient
+from livy_uploads.executor.cluster.callback import CallbackClient, CallbackServer
+from livy_uploads.executor.cluster.certs import CertManager
 
 
 LOGGER = logging.getLogger(__name__)
@@ -252,6 +254,40 @@ class TestWorkerServer:
         thread.join(timeout=1)
         assert not thread.is_alive()
 
+    def test_mtls(self, tmp_path: Path, callback_server: CallbackServer):
+        ca_data = callback_server.cert_manager.ca_data
+        callback_client = CallbackClient(
+            server_url=callback_server.url,
+            worker_name='worker1',
+            worker_secret=callback_server.get_worker_secret('worker1'),
+            cert_manager=CertManager(basedir=tmp_path / 'callback-client', ca_data=ca_data),
+        )
+
+        worker = WorkerServer(
+            name='worker1',
+            command='bash',
+            args=['-c', 'exit 42'],
+            hostname='localhost',
+            log_dir=str(tmp_path),
+            callback=callback_client,
+            cert_manager=CertManager(basedir=tmp_path / 'worker', ca_data=ca_data),
+        )
+
+        thread = threading.Thread(daemon=True, target=worker.run)
+        thread.start()
+
+        callback_server.get_info('worker1')
+        time.sleep(2)
+
+        client = WorkerClient(
+            worker.url,
+            cert_manager=callback_server.cert_manager,
+        )
+        client.wait()
+
+        time.sleep(1)
+        assert client.poll() == (b'', 42)
+
 
 
 def md5hex(data: Union[str, bytes]) -> str:
@@ -259,3 +295,18 @@ def md5hex(data: Union[str, bytes]) -> str:
         data = data.encode('utf8')
     return hashlib.md5(data).hexdigest()
 
+
+@pytest.fixture()
+def callback_server(tmp_path: Path):
+    cert_manager = CertManager(basedir=tmp_path / 'master')
+    cert_manager.setup()
+
+    callback_server = CallbackServer(
+        cert_manager=cert_manager,
+        hostname='localhost',
+    )
+    callback_server.start()
+    try:
+        yield callback_server
+    finally:
+        callback_server.close()

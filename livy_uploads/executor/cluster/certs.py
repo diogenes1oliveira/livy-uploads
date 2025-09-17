@@ -7,20 +7,24 @@ Code to manage the certificates for the server and workers.
 
 __all__ = ('CertManager',)
 
-
-from contextlib import ExitStack
 import logging
 from pathlib import Path
 import re
+import ssl
 import subprocess
 import tempfile
 import textwrap
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, NamedTuple, Type, TypeVar
+
+from livy_uploads.executor.cluster.model import ServerCert, ClientCert
 
 
-HOSTNAME_PATTERN = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$')
+HOSTNAME_PATTERN = re.compile(r'^[a-zA-Z0-9.-]+$')
 
 LOGGER = logging.getLogger(__name__)
+
+
+C = TypeVar('C', ServerCert, ClientCert)
 
 
 class CertManager:
@@ -28,71 +32,86 @@ class CertManager:
     Manages the certificates for the server and workers.
     """
 
-    def __init__(self, basedir: Optional[str] = None):
-        self.basedir = basedir or 'var'
-        self.stack = ExitStack()
-        self.var_path: Optional[Path] = None
+    def __init__(
+        self,
+        basedir: Optional[str] = None,
+        ca_data: Optional[str] = None,
+        key_size: int = 2048,
+    ):
+        self.basedir = Path(basedir or 'var') / 'certs'
+        self.key_size = key_size
+        self._client_ca_data = ca_data or None
+        if self._client_ca_data and '-----BEGIN CERTIFICATE-----' not in self._client_ca_data:
+            raise ValueError('Invalid CA data: not a base64-encoded certificate')
+        self._ca_setup = False
 
     def setup(self) -> None:
-        tmpdir = self.stack.enter_context(tempfile.TemporaryDirectory(dir=self.basedir))
-        self.var_path = Path(tmpdir)
+        self.basedir = self.basedir.absolute()
+        self.basedir.mkdir(parents=True, exist_ok=True)
 
-        self._make_ca()
+        if not self._ca_setup:
+            if not self._client_ca_data:
+                self._make_ca()
+            else:
+                self.ca_path.write_text(self._client_ca_data)
+
+            self._ca_setup = True
+
+    @property
+    def tmp_prefix(self) -> str:
+        """
+        Prefix for temporary files.
+        """
+        return str(self.basedir / 'tmp-cert-')
 
     def close(self) -> None:
-        if self.stack:
-            self.stack.close()
-            self.stack = None
+        pass
+
+    @property
+    def client_mode(self) -> bool:
+        """
+        Whether the CA is in client mode.
+        """
+        return self._client_ca_data is not None
 
     @property
     def ca_path(self) -> Path:
-        assert self.var_path
-        return self.var_path / 'ca.pem'
+        """
+        Path to the CA certificate.
+        """
+        return self.basedir / 'ca.pem'
+
+    @property
+    def ca_data(self) -> str:
+        """
+        The CA data.
+        """
+        return self.ca_path.read_text()
 
     @property
     def key_path(self) -> Path:
-        assert self.var_path
-        return self.var_path / 'ca.key'
+        """
+        Path to the CA key.
+        """
+        if self.client_mode:
+            raise ValueError('CA key is not available in client mode')
+        return self.basedir / 'ca.key'
 
-    @property
-    def ca_conf_path(self) -> Path:
-        assert self.var_path
-        return self.var_path / 'ca.cnf'
-
-    @property
-    def cert_conf_path(self) -> Path:
-        assert self.var_path
-        return self.var_path / 'cert.cnf'
-
-    def get_cert_paths(self, name: str) -> Tuple[Path, Path]:
-        assert self.var_path
-
-        parts = name.split('@', maxsplit=1)
-        for p in parts:
-            if not HOSTNAME_PATTERN.match(p):
-                raise ValueError(f'Invalid name: {name!r}')
-
-        name = name.replace('@', '-')
-        return self.var_path / f'cert-{name}.pem', self.var_path / f'cert-{name}.key'
-
-    def make_key(self, name: str, key_size: int = 2048, force: bool = False) -> Path:
+    def make_key(self, name: str) -> Path:
         """
         Creates a new client RSA key.
         """
-        _, key_path = self.get_cert_paths(name)
-        if key_path.exists() and not force:
-            LOGGER.info('key already exists at %s', key_path)
-            return key_path
+        basename = self._get_basename(name)
+        key_path = self.basedir / f'cert-{basename}.key'
 
         LOGGER.info('creating new key at %s', key_path)
-        key_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run([
-            'openssl', 'genrsa', '-out', str(key_path), str(key_size),
+            'openssl', 'genrsa', '-out', str(key_path), str(self.key_size),
         ], check=True, stdout=subprocess.DEVNULL)
 
         return key_path
 
-    def make_request(self, name: str, hostnames: Optional[List[str]] = None, ips: Optional[List[str]] = None, force: bool = False) -> Tuple[Path, Path]:
+    def make_request(self, name: str, hostnames: Optional[List[str]] = None, ips: Optional[List[str]] = None) -> Tuple[Path, Path, Path, Path]:
         """
         Creates a new certificate request.
 
@@ -100,34 +119,28 @@ class CertManager:
             name: The name of the certificate.
             hostnames: The hostnames of the certificate.
             ips: The IPs of the certificate.
-            force: If True, the certificate request will be created even if it already exists.
 
         Returns:
-            A tuple of the certificate request path and the key path.
+            A tuple of the (certificate request path, key path, configuration path, certificate path)
         """
-        parts = name.split('@', maxsplit=1)
-        for p in parts:
-            if not HOSTNAME_PATTERN.match(p):
-                raise ValueError(f'Invalid name: {name!r}')
+        basename = self._get_basename(name)
 
         hostnames = hostnames or []
         ips = ips or []
         if '@' not in name and name not in hostnames:
             hostnames = [name] + hostnames
 
-        assert self.ca_path.exists()
-        assert self.key_path.exists()
+        key_path = self.make_key(basename)
+        conf_path = self.basedir / f'cert-{basename}.cnf'
+        csr_path = self.basedir / f'cert-{basename}.csr'
+        cert_path = self.basedir / f'cert-{basename}.pem'
 
-        key_path = self.make_key(name, force=force)
-
-        conf_path = self.var_path / f'cert-{name}.cnf'
         LOGGER.info('creating certificate configuration at %s', conf_path)
 
         # Build alt names section
         alt_names = []
         for i, hostname in enumerate(hostnames):
-            alt_names.append(f'DNS.{2*i+1} = {hostname}')
-            alt_names.append(f'DNS.{2*i+2} = *.{hostname}')
+            alt_names.append(f'DNS.{i+1} = {hostname}')
         for i, ip in enumerate(ips):
             alt_names.append(f'IP.{i+1} = {ip}')
 
@@ -139,7 +152,10 @@ class CertManager:
         ''')
         
         if alt_names:
+            LOGGER.info('adding alt names for %r: %s', name, alt_names)
             v3_req_section += 'subjectAltName = @alt_names\n'
+        else:
+            LOGGER.info('no alt names for %r', name)
         
         conf = textwrap.dedent(f'''
             [req]
@@ -166,37 +182,87 @@ class CertManager:
 
         conf_path.write_text(conf)
 
-        csr_path = self.var_path / f'cert-{name.replace("@", "-")}.csr'
         LOGGER.info('creating new CSR at %s', csr_path)
         subprocess.run([
             'openssl', 'req', '-new', '-key', str(key_path), '-out', str(csr_path), '-config', str(conf_path),
         ], check=True, stdout=subprocess.DEVNULL)
 
-        return csr_path, key_path
+        return csr_path, key_path, conf_path, cert_path
 
-    def sign_request(self, csr_path: Path, force: bool = False) -> Path:
+    def sign_request(self, csr: str, conf: str) -> str:
         """
         Signs a certificate request.
 
         Args:
-            csr_path: The path to the certificate request.
+            csr: The contents of the certificate request.
+            conf: The contents of the configuration file.
 
         Returns:
-            The path to the signed certificate.
+            The contents of the signed certificate.
         """
-        cert_path = self.var_path / f'cert-{csr_path.stem}.pem'
-        if cert_path.exists() and not force:
-            LOGGER.info('certificate already exists at %s', cert_path)
-            return cert_path
+        if '-----BEGIN CERTIFICATE REQUEST-----' not in csr:
+            raise ValueError('Invalid CSR: not a base64-encoded CSR')
+        if '[req]' not in conf:
+            raise ValueError('Invalid configuration: not a valid OpenSSL configuration')
 
-        LOGGER.info('signing request at %s and generating certificate at %s', csr_path, cert_path)
-        subprocess.run([
-            'openssl', 'x509', '-req', '-in', str(csr_path), '-out', str(cert_path), '-CA', str(self.ca_path), '-CAkey', str(self.key_path), '-CAcreateserial', '-days', '365',
-        ], check=True, stdout=subprocess.DEVNULL)
+        if not self._ca_setup:
+            raise RuntimeError('CA is not setup')
+        if self.client_mode:
+            raise RuntimeError('signing certificates with the CA is not available in client mode')
 
-        return cert_path
+        with tempfile.TemporaryDirectory(prefix=self.tmp_prefix) as tmpdir:
+            csr_path = Path(tmpdir) / 'csr.pem'
+            conf_path = Path(tmpdir) / 'conf.pem'
+            cert_path = Path(tmpdir) / 'cert.pem'
 
-    def make_cert(self, name: str, hostnames: Optional[List[str]] = None, ips: Optional[List[str]] = None, force: bool = False) -> Tuple[Path, Path]:
+            csr_path.write_text(csr)
+            conf_path.write_text(conf)
+
+            LOGGER.info('signing request at %s and generating certificate at %s', csr_path, cert_path)
+            subprocess.run([
+                'openssl', 'x509', '-req',
+                '-in', str(csr_path), '-out', str(cert_path),
+                '-CA', str(self.ca_path), '-CAkey', str(self.key_path), '-CAcreateserial',
+                '-days', '365', '-extensions', 'v3_req',
+                '-extfile', str(conf_path),
+            ], check=True, stdout=subprocess.DEVNULL)
+
+            return cert_path.read_text()
+
+    def get_cert(self, name: str) -> ClientCert:
+        """
+        Gets a client certificate for non-mTLS contexts.
+        """
+        return ClientCert(
+            name=name,
+            ca_data=self.ca_data,
+            cert_path=None,
+            key_path=None,
+        )
+
+    def get_mtls_cert(self, t: Type[C], name: str, cert: str) -> C:
+        """
+        Gets a client certificate for mTLS contexts.
+
+        The key must have been generated beforehand.
+        """
+        basename = self._get_basename(name)
+        key_path = self.basedir / f'cert-{basename}.key'
+        if not key_path.exists():
+            raise ValueError(f'Key file not found at {key_path!r}')
+
+        cert_path = self.basedir / f'cert-{basename}.pem'
+        cert_path.touch(0o600)
+        cert_path.chmod(0o600)
+        cert_path.write_text(cert)
+        return t(
+            name=name,
+            ca_data=self.ca_data,
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+    def make_cert(self, name: str, hostnames: Optional[List[str]] = None, ips: Optional[List[str]] = None) -> Tuple[Path, Path]:
         """
         Creates a new key, CSR and signed certificate.
 
@@ -204,17 +270,63 @@ class CertManager:
             name: The name of the certificate.
             hostnames: The hostnames of the certificate.
             ips: The IPs of the certificate.
-            force: If True, the certificate request will be created even if it already exists.
 
         Returns:
             A tuple of the certificate path and the key path.
         """
-        csr_path, key_path = self.make_request(name, hostnames, ips, force)
-        cert_path = self.sign_request(csr_path, force)
+        csr_path, key_path, conf_path, cert_path = self.make_request(name, hostnames, ips)
+
+        cert = self.sign_request(csr_path.read_text(), conf_path.read_text())
+        cert_path.write_text(cert)
+
         return cert_path, key_path
 
+    def make_client_cert(self, name: str, mtls: bool) -> ClientCert:
+        """
+        Creates a new client certificate.
+
+        Args:
+            name: The name of the certificate.
+
+        Returns:
+            A new client certificate.
+        """
+        if not mtls:
+            return ClientCert(name=name, cert_path=None, key_path=None, ca_data=self.ca_data)
+
+        cert_path, key_path = self.make_cert(name=name)
+        return ClientCert(name=name, cert_path=cert_path, key_path=key_path, ca_data=self.ca_data)
+
+    def make_server_cert(self, hostname: str, mtls: bool, hostnames: Optional[List[str]] = None, ips: Optional[List[str]] = None) -> ServerCert:
+        """
+        Creates a new server certificate.
+
+        Args:
+            hostname: The hostname of the certificate.
+            hostnames: The hostnames of the certificate.
+            ips: The IPs of the certificate.
+
+        Returns:
+            A tuple of the certificate path and the key path.
+        """
+        hostnames = list({hostname, 'localhost', '*.localhost', *(hostnames or [])})
+        ips = list({*(ips or []), '127.0.0.1'})
+        cert_path, key_path = self.make_cert(name=hostname, hostnames=hostnames, ips=ips)
+        if mtls:
+            return ServerCert(name=hostname, cert_path=cert_path, key_path=key_path, ca_data=self.ca_data)
+        else:
+            return ServerCert(name=hostname, cert_path=cert_path, key_path=key_path, ca_data=None)
+
+    def _get_basename(self, name: str) -> str:
+        basename = name.replace('@', '-')
+        if not HOSTNAME_PATTERN.match(basename):
+            raise ValueError(f'Invalid name: {name!r}')
+
+        return basename
+
     def _make_ca(self):
-        self.ca_conf_path.write_text(textwrap.dedent('''
+        ca_conf_path = self.basedir / 'ca.cnf'
+        ca_conf_path.write_text(textwrap.dedent('''
             [req]
             default_bits = 2048
             default_md = sha256
@@ -236,5 +348,5 @@ class CertManager:
         '''))
 
         subprocess.run([
-            'openssl', 'req', '-x509', '-new', '-nodes', '-keyout', str(self.key_path), '-out', str(self.ca_path), '-days', '365', '-config', str(self.ca_conf_path),
+            'openssl', 'req', '-x509', '-new', '-nodes', '-keyout', str(self.key_path), '-out', str(self.ca_path), '-days', '365', '-config', str(ca_conf_path),
         ], check=True, stdout=subprocess.DEVNULL)

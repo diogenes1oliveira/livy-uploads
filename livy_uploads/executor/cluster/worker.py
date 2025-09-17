@@ -7,6 +7,7 @@ Code to execute a command in a remote cluster worker and serve the output over H
 
 
 
+from ast import Call
 import fcntl
 import json
 import logging
@@ -22,14 +23,15 @@ import subprocess
 import termios
 import threading
 import time
-from typing import BinaryIO, Optional, List, Mapping, Callable, Tuple, TypeVar, Union
+from typing import Any, BinaryIO, Optional, List, Mapping, Callable, Tuple, TypeVar, Union, Type
 from urllib.request import Request, urlopen
 
-from livy_uploads.executor.cluster.http import HttpBaseServer, HttpBaseHandler, HttpBuiltinClient, HttpBaseClient
-from livy_uploads.executor.cluster.model import WorkerInfo, PollResult
+from livy_uploads.executor.cluster.http import HttpBaseServer, HttpBaseHandler, HttpBuiltinClient, HttpBaseClient, HttpRequestsClient
+from livy_uploads.executor.cluster.model import WorkerInfo, PollResult, WorkerCert, ServerCert
 from livy_uploads.executor.cluster.utils import assert_type
 from livy_uploads.executor.cluster.callback import CallbackClient
 from livy_uploads.executor.cluster.http import parse_entity
+from livy_uploads.executor.cluster.certs import CertManager
 
 T = TypeVar('T')
 
@@ -62,11 +64,12 @@ class WorkerServer(HttpBaseServer):
         pause: Optional[float] = None,
         kill_timeout: Optional[float] = None,
         log_dir: Optional[str] = 'var/log',
-        callback: Optional[CallbackClient, Union[Callable[[WorkerInfo], None]]] = None,
+        callback: Optional[Union[Callable[[WorkerInfo], Any], CallbackClient]] = None,
         stdin: Optional[bool] = True,
         tty_size: Optional[Tuple[int, int]] = None,
         bufsize: Optional[int] = 4096,
         heartbeat_timeout: Optional[float] = None,
+        cert_manager: Optional[CertManager] = None,
     ):
         '''
         Args:
@@ -117,6 +120,7 @@ class WorkerServer(HttpBaseServer):
         self._output: Optional[BinaryIO] = None
         self._out_thread: Optional[threading.Thread] = None
         self._last_poll_time: Optional[float] = None
+        self.cert_manager = cert_manager
 
     @property
     def info(self) -> WorkerInfo:
@@ -129,13 +133,21 @@ class WorkerServer(HttpBaseServer):
             url=self.url,
         )
 
-    def start(self) -> None:
+    def setup(self) -> None:
         """
         Starts the server and the process.
         """
 
-        super().start()
+        self._setup_process()
+        super().setup()
 
+        try:
+            self._send_info()
+        except Exception:
+            self._kill()
+            raise
+
+    def _setup_process(self):
         LOGGER.info('preparing the files and directories')
         try:
             self.log_file.unlink()
@@ -187,13 +199,33 @@ class WorkerServer(HttpBaseServer):
         self._out_thread = threading.Thread(target=self._write_output)
         self._out_thread.start()
 
-        try:
-            self._send_info()
-        except Exception:
-            self._kill()
-            raise
+    def _send_info(self):
+        if self.cert_manager:
+            self.cert_manager.setup()
+            csr_path, _, conf_path, _ = self.cert_manager.make_request(name=self.hostname)
+            worker_cert = WorkerCert(
+                name=self.hostname,
+                csr=csr_path.read_text(),
+                conf=conf_path.read_text(),
+            )
+        else:
+            worker_cert = None
 
-        LOGGER.info('worker started with server running on %s', self.url)
+        info = WorkerInfo(
+            name=self.name,
+            pid=self._process.pid,
+            url=self.url,
+            cert=worker_cert,
+        )
+        if self.callback:
+            if isinstance(self.callback, CallbackClient):
+                info = self.callback.send_info(info)
+                if worker_cert:
+                    if not info.cert or not info.cert.cert:
+                        raise RuntimeError('Worker certificate is not available')
+                    self.cert = self.cert_manager.get_mtls_cert(ServerCert, name=self.hostname, cert=info.cert.cert)
+            else:
+                self.callback(info)
 
     def close(self) -> None:
         """
@@ -241,20 +273,6 @@ class WorkerServer(HttpBaseServer):
             return returncode
         finally:
             self.close()
-
-    def _send_info(self):
-        info = self.info
-        LOGGER.info('started worker: %s', info)
-
-        if not self.callback:
-            return
-
-        if isinstance(self.callback, CallbackClient):
-            callback = self.callback.send_info
-        else:
-            callback = self.callback
-
-        callback(info)
 
     def _write_output(self):
         assert self._process
@@ -427,12 +445,35 @@ class WorkerClient:
     def __init__(
         self,
         url: str,
+        name: Optional[str] = None,
         bufsize: int = 4096,
-        http_client: Optional[HttpBaseClient] = None,
+        pause: Optional[float] = 0.5,
+        timeout: Optional[float] = None,
+        start_timeout: Optional[float] = None,
+        proxy: Optional[str] = None,
+        http_client_class: Type[HttpRequestsClient] = HttpRequestsClient,
+        cert_manager: Optional[CertManager] = None,
+        basedir: Optional[Union[str, Path]] = None,
+        client_name: str = 'test@localhost',
     ):
         self.url = url
         self.bufsize = bufsize
-        self.http_client = http_client or HttpBuiltinClient()
+        self.name = name or None
+        self.start_timeout = start_timeout or 15.0
+        self.pause = pause or 0.5
+
+        if cert_manager:
+            cert_manager.setup()
+            cert = cert_manager.make_client_cert(client_name, mtls=True)
+        else:
+            cert = None
+
+        self.http_client = http_client_class(
+            timeout=timeout or 3.0,
+            proxy=proxy or None,
+            cert=cert,
+            basedir=basedir or None,
+        )
         self._lock = threading.Lock()
         self._stdout_offset = 0
         self._returncode = None
@@ -452,6 +493,27 @@ class WorkerClient:
                     self._returncode = returncode
 
             return PollResult(stdout=data, returncode=returncode)
+
+    def ping(self) -> None:
+        url = f'{self.url}/ping'
+        try:
+            status, data = self.http_client.get(url)
+            if status != 200 or data != b'pong':
+                LOGGER.error('Bad HTTP response: status=%d data=%s', status, data)
+                raise IOError
+        except IOError:
+            raise ConnectionError(f'Failed to ping {self.url}')
+
+    def wait(self) -> None:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < self.start_timeout:
+            try:
+                self.ping()
+                return
+            except ConnectionError:
+                time.sleep(self.pause)
+
+        raise TimeoutError(f'Failed to ping {self.url} in {self.start_timeout} seconds')
 
     def get_stdout(self, start: int = 0, size: Optional[int] = None) -> bytes:
         size = size or self.bufsize

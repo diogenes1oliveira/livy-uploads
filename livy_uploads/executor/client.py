@@ -13,40 +13,25 @@ import os
 import time
 import signal
 import threading
+from pathlib import Path
 from typing import Any, Optional, List, Mapping, Tuple, BinaryIO, Union
 
 import requests
 
-from livy_uploads.executor.cluster import WorkerClient, HttpBaseClient
+from livy_uploads.executor.cluster import WorkerClient, HttpBaseClient, HttpRequestsClient, ClientCert
 from livy_uploads.executor.commands import (
     LivyPrepareMaster,
     LivyStartProcess,
+    LivySignCertificate,
 )
 from livy_uploads.session import LivySession
 from livy_uploads.utils import assert_type
 from livy_uploads.retry_policy import TimeoutRetryPolicy
 from livy_uploads.executor.console import Console, LineConsole, RawConsole, TTYConsole
 from livy_uploads.executor.signals import SignalMonitor, signame
+from livy_uploads.executor.cluster import CertManager
 
 LOGGER = logging.getLogger(__name__)
-
-
-class RequestsHttpClient(HttpBaseClient):
-    """
-    A simple client for HTTP requests using the `requests` library.
-    """
-
-    def __init__(self, *, timeout: Optional[float] = None, proxy: Optional[str] = None):
-        self.timeout = timeout or 3.0
-        self.proxies = {'http': proxy, 'https': proxy} if proxy else {}
-    
-    def get(self, url: str) -> Tuple[int, Optional[bytes]]:
-        response = requests.get(url, timeout=self.timeout, proxies=self.proxies)
-        return response.status_code, response.content
-
-    def post(self, url: str, data: Optional[bytes] = None) -> Tuple[int, Optional[bytes]]:
-        response = requests.post(url, data=data, timeout=self.timeout, proxies=self.proxies)
-        return response.status_code, response.content
 
 
 class LivyExecutorClient:
@@ -69,6 +54,7 @@ class LivyExecutorClient:
         request_timeout: Optional[float] = None,
         proxy: Optional[str] = None,
         stdin_poll_pause: Optional[float] = None,
+        basedir: Optional[Union[str, Path]] = None,
     ):
         '''
         Args:
@@ -96,7 +82,11 @@ class LivyExecutorClient:
         self.kill_timeout = kill_timeout or 2.0
         self.bufsize = bufsize or 4096
         self.stdin_poll_pause = stdin_poll_pause
-        self.http_client = RequestsHttpClient(timeout=request_timeout, proxy=proxy)
+        self.request_timeout = request_timeout
+        self.proxy = proxy
+        self.basedir = Path(basedir or 'var')
+        self.cert_manager: Optional[CertManager] = None
+        self.cert: Optional[ClientCert] = None
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> 'LivyExecutorClient':
@@ -129,6 +119,9 @@ class LivyExecutorClient:
         callback_url = self.session.apply(LivyPrepareMaster())
         LOGGER.info('callback url: %s', callback_url)
 
+        self.cert_manager, self.cert = self.session.apply(LivySignCertificate(basedir=self.basedir))
+        LOGGER.info('got signed certificate for client=%r', self.cert.name)
+
     def start(
         self,
         command: str,
@@ -157,6 +150,9 @@ class LivyExecutorClient:
             stop_signal: The signal to send to the worker to gracefully stop it. If not provided, defaults to `SIGTERM`.
             max_stop_count: The maximum number of stop signals to send to the worker before sending SIGKILL.
         '''
+        assert self.cert_manager is not None, 'Certificate manager is not setup'
+        assert self.cert is not None, 'Certificate is not setup'
+
         stdin = True if stdin is None else stdin
         stop_signal = int(stop_signal) if stop_signal is not None else signal.SIGTERM
 
@@ -182,14 +178,17 @@ class LivyExecutorClient:
 
         return WorkerMonitor(
             url=info.url,
+            name=info.name,
             bufsize=self.bufsize,
             pause=self.pause,
-            http_client=self.http_client,
             stop_timeout=self.stop_timeout,
             kill_timeout=self.kill_timeout,
             stop_signal=stop_signal,
             max_stop_count=max_stop_count,
             stdin_poll_pause=self.stdin_poll_pause,
+            cert_manager=self.cert_manager,
+            basedir=self.basedir,
+            proxy=self.proxy,
         )
 
 
@@ -201,16 +200,19 @@ class WorkerMonitor:
     def __init__(
         self,
         url: str,
+        name: Optional[str] = None,
         bufsize: Optional[int] = None,
         pause: Optional[float] = None,
-        http_client: Optional[HttpBaseClient] = None,
         stop_timeout: Optional[float] = None,
         kill_timeout: Optional[float] = None,
         stop_signal: Optional[int] = None,
         max_stop_count: Optional[int] = 2,
         stdin_poll_pause: Optional[float] = None,
+        cert_manager: Optional[CertManager] = None,
+        basedir: Optional[Union[str, Path]] = None,
+        proxy: Optional[str] = None,
     ):
-        self.http_client = http_client or RequestsHttpClient()
+        self.name = name or None
         self.pause = pause or 1.0
         self.stop_timeout = stop_timeout or 10.0
         self.kill_timeout = kill_timeout or 2.0
@@ -218,10 +220,16 @@ class WorkerMonitor:
         self.max_stop_count = max_stop_count or 2
         self.stop_signal = int(stop_signal) if stop_signal is not None else int(signal.SIGTERM)
         self.stdin_poll_pause = stdin_poll_pause
+        self.cert_manager = cert_manager
+        self.basedir = basedir
+        self.proxy = proxy
         self.client = WorkerClient(
             url=url,
+            name=self.name,
             bufsize=bufsize,
-            http_client=self.http_client,
+            cert_manager=self.cert_manager,
+            basedir=self.basedir,
+            proxy=self.proxy,
         )
         self._done = threading.Event()
         self._interrupted_at: Optional[float] = None

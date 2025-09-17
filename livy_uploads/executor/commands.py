@@ -5,18 +5,21 @@
 Commands to schedule a process in the remote cluster.
 '''
 
-__all__ = ('LivyPrepareMaster', 'LivyStartProcess')
+__all__ = ('LivyPrepareMaster', 'LivyStartProcess', 'LivySignCertificate')
 
 
 import logging
+from pathlib import Path
 from struct import pack
 from tempfile import TemporaryDirectory
-from typing import List, Optional, Tuple, TypeVar, Mapping
+from typing import List, Optional, Tuple, TypeVar, Mapping, Union
 from uuid import uuid4
 
 from livy_uploads.commands import LivyRunCode, LivyUploadFile
 from livy_uploads.executor import cluster
-from livy_uploads.executor.cluster import WorkerInfo
+from livy_uploads.executor.cluster import WorkerInfo, CertManager
+from livy_uploads.executor.cluster.model import ClientCert
+from livy_uploads.executor.cluster.utils import assert_type
 from livy_uploads.session import LivySession, LivyCommand
 from livy_uploads.pack import pack_package
 
@@ -54,18 +57,28 @@ class LivyPrepareMaster(LivyCommand[str]):
             ),
             code='''
                 spark.sparkContext.addPyFile(pyfile)
-                from livy_uploads.executor.cluster import CallbackServer, CallbackClient
+                import socket
+                from livy_uploads.executor.cluster import CallbackServer, CallbackClient, CertManager
 
                 try:
-                    callback_client
+                    cert_manager
+                except NameError:
+                    cert_manager = CertManager(basedir='var')
+                    cert_manager.setup()
+
+                ca_data = cert_manager.ca_data
+
+                try:
+                    callback_url
                     started_now = False
                 except NameError:
-                    callback_server = CallbackServer()
+                    hostname = socket.getfqdn()
+                    callback_server = CallbackServer(hostname=hostname, cert_manager=cert_manager)
                     callback_server.start()
-                    callback_client = CallbackClient(callback_server.url)
+                    callback_url = callback_server.url
                     started_now = True
 
-                _ = callback_server.url, started_now
+                _ = callback_url, started_now
             ''',
         )
         _, (url, started_now) = command.run(session)
@@ -73,6 +86,57 @@ class LivyPrepareMaster(LivyCommand[str]):
         started_now: bool
         LOGGER.info('callback server %s at %s', 'started' if started_now else 'already running', url)
         return url
+
+
+class LivySignCertificate(LivyCommand[Tuple[CertManager, ClientCert]]):
+    '''
+    Signs a certificate.
+    '''
+
+    def __init__(
+        self,
+        name: str = 'test@localhost',
+        basedir: Optional[Union[str, Path]] = None,
+    ):
+        self.name = name
+        self.basedir = Path(basedir or 'var')
+        self.cert_manager = CertManager(basedir=self.basedir)
+
+    def run(self, session: 'LivySession') -> Tuple[CertManager, ClientCert]:
+        '''
+        Executes the command and returns the signed certificate.
+        '''
+        LOGGER.info('getting the remote CA data')
+        command = LivyRunCode(
+            code='''
+                _ = cert_manager.ca_data
+            ''',
+        )
+        _, ca_data = command.run(session)
+        ca_data = assert_type(ca_data, str)
+
+        LOGGER.info('creating a certificate request')
+        cert_manager = CertManager(basedir=self.basedir, ca_data=ca_data)
+        cert_manager.setup()
+        csr_path, _, conf_path, _ = cert_manager.make_request(name=self.name)
+
+        LOGGER.info('signing the certificate')
+        command = LivyRunCode(
+            vars=dict(
+                name=self.name,
+                csr=csr_path.read_text(),
+                conf=conf_path.read_text(),
+            ),
+            code='''
+                cert_data = cert_manager.sign_request(csr=csr, conf=conf)
+                _ = cert_data
+            ''',
+        )
+        _, cert_data = command.run(session)
+        cert_data = assert_type(cert_data, str)
+        cert = cert_manager.get_mtls_cert(ClientCert, name=self.name, cert=cert_data)
+
+        return self.cert_manager, cert
 
 
 class LivyStartProcess(LivyCommand[WorkerInfo]):
@@ -118,10 +182,12 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
             code=f'''
                 import logging
                 from pyspark import InheritableThread
-                from livy_uploads.executor.cluster import WorkerServer
+                from livy_uploads.executor.cluster import WorkerServer, CallbackClient, HttpBuiltinClient, CertManager
 
                 kwargs['name'] = name
-                kwargs['callback'] = callback_client
+                kwargs['worker_secret'] = callback_server.get_worker_secret(name)
+                kwargs['ca_data'] = cert_manager.ca_data
+                kwargs['callback_url'] = callback_url
 
                 def {fname}_worker(kwargs):
                     logging.basicConfig(
@@ -129,7 +195,19 @@ class LivyStartProcess(LivyCommand[WorkerInfo]):
                         format='%(asctime)s %(levelname)s %(name)s: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                     )
+                    worker_secret = kwargs.pop('worker_secret')
+                    ca_data = kwargs.pop('ca_data')
+                    callback_url = kwargs.pop('callback_url')
+                    name = kwargs['name']
 
+                    cert_manager = CertManager(basedir='var', ca_data=ca_data)
+                    callback_client = CallbackClient(
+                        server_url=callback_url,
+                        worker_name=name,
+                        worker_secret=worker_secret,
+                        cert_manager=cert_manager,
+                    )
+                    kwargs['callback'] = callback_client
                     worker = WorkerServer(**kwargs)
                     return worker.run()
 
