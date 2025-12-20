@@ -1,8 +1,6 @@
-from typing import Any, Type, TypeVar
+from typing import Any, Type, TypeVar, Union
+
 import requests
-
-
-from livy_uploads.executor.cluster import assert_type
 
 T = TypeVar('T')
 
@@ -20,3 +18,24 @@ def try_decode(response: requests.Response) -> Any:
             return response.content.decode('utf8', errors='replace')
 
 
+def assert_type(value: Any, expected_type: Type[T]) -> T:
+    """
+    Type assertion utility function.
+    """
+    try:
+        origin = getattr(expected_type, '__origin__')
+        if origin is Union:
+            args = expected_type.__args__
+            if len(args) == 2 and args[1] is type(None):
+                nullable = True
+                expected_type = args[0]
+    except AttributeError:
+        nullable = False
+
+    if nullable and value is None:
+        return value
+
+    if not isinstance(value, expected_type):
+        raise ValueError(f'Expected {expected_type}, got {type(value)}')
+
+    return value

@@ -355,6 +355,5 @@ def get_session(session_name: Optional[str] = None) -> 'LivySession':
         session_id=livy_session.id,
         default_headers=livy_client._headers,
         verify=livy_client.verify_ssl,
-        auth=livy_client._auth,
         requests_session=livy_client._session,
     )
