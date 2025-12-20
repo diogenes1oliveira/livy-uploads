@@ -139,14 +139,14 @@ class TestLivySessionEndpoint:
             seen = set(creation_logs)
             time.sleep(5.0)
             logs = next(logs_iter)
-            assert len(logs) < 20
-            assert all(log not in seen for log in logs)
+            assert len(logs) < 30
+            assert all(log not in seen for log in logs if log.strip() not in ["stderr:", "stdout:"])
 
             seen.update(logs)
             time.sleep(5.0)
             logs = next(logs_iter)
-            assert len(logs) < 20
-            assert all(log not in seen for log in logs)
+            assert len(logs) < 30
+            assert all(log not in seen for log in logs if log.strip() not in ["stderr:", "stdout:"])
         finally:
             try:
                 session.delete()

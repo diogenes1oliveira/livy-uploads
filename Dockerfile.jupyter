@@ -1,23 +1,40 @@
-FROM python:3.6
+FROM python:3.9-bookworm AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y curl unzip netcat-openbsd tar krb5-config libkrb5-dev dnsutils && \
     rm -rf /var/lib/apt/lists/*
 
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_ROOT_USER_ACTION=ignore
+
+RUN pip install 'uv~=0.9'
+
+FROM base AS exporter
+
+WORKDIR /app
+COPY ./pyproject.toml ./uv.lock ./
+
+RUN uv pip compile pyproject.toml > requirements.txt && \
+    uv pip compile --group dev > requirements-dev.txt && \
+    uv pip compile --group jupyter > requirements-jupyter.txt && \
+    uv pip compile --group magics > requirements-magics.txt && \
+    uv pip compile --group kerberos > requirements-kerberos.txt
+
+FROM base
+
 WORKDIR /etc/app
-COPY ./requirements-jupyter.txt ./
-RUN pip3 install --no-cache-dir -r ./requirements-jupyter.txt
-COPY ./requirements-magics.txt ./
+COPY --from=exporter /app/requirements-magics.txt ./requirements-kerberos.txt
+RUN pip3 install --no-cache-dir -r ./requirements-kerberos.txt
+COPY --from=exporter /app/requirements-magics.txt ./requirements-magics.txt
 RUN pip3 install --no-cache-dir -r ./requirements-magics.txt
-COPY ./requirements-dev.txt ./
+COPY --from=exporter /app/requirements-jupyter.txt ./requirements-jupyter.txt
+RUN pip3 install --no-cache-dir -r ./requirements-jupyter.txt
+COPY --from=exporter /app/requirements-dev.txt ./requirements-dev.txt
 RUN pip3 install --no-cache-dir -r ./requirements-dev.txt
-COPY ./requirements.txt ./
+COPY --from=exporter /app/requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r ./requirements.txt
-
-RUN curl -sfL 'https://github.com/erebe/wstunnel/releases/download/v10.4.4/wstunnel_10.4.4_linux_amd64.tar.gz' | tar xz -C /usr/bin/ wstunnel
-
-RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | awk '{print $NF}')" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
+RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | cut -d' ' -f2)" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
     echo >&2 "ERROR: couldn't find path to sparkmagic. OUTPUT: "; \
     pip3 show sparkmagic 2>&1 | sed 's/^/>  /'; \
     exit 1; \
@@ -25,7 +42,7 @@ RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | awk '{
     echo >&2 "INFO: using sparkmagic path: $SPARK_MAGIC_PATH" && \
     jupyter-kernelspec install "$SPARK_MAGIC_PATH/sparkmagic/kernels/sparkkernel" && \
     jupyter-kernelspec install "$SPARK_MAGIC_PATH/sparkmagic/kernels/pysparkkernel" && \
-    jupyter server extension enable --py sparkmagic
+    jupyter-serverextension enable --sys-prefix --py sparkmagic
 
 ARG USERNAME=app
 ARG USER_UID=1000

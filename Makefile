@@ -1,6 +1,10 @@
 export USER_UID ?= $(shell id -u)
 export USER_GID ?= $(shell id -g)
 
+.PHONY: dev/sync
+dev/sync:
+	uv sync --all--groups
+
 .PHONY: dev/build
 dev/build:
 	docker compose --progress=plain build
