@@ -1,21 +1,23 @@
 {
+    "editor.tabSize": 4,
     "editor.formatOnSave": true,
-    "[python]": {
-        "editor.defaultFormatter": "ms-python.autopep8",
-    },
-    "autopep8.args": [
-        "--max-line-length=120"
-    ],
+    "files.autoSave": "onFocusChange",
     "makefile.configureOnOpen": false,
-    "python.testing.pytestArgs": [
-        "."
+    "editor.rulers": [
+        120
     ],
-    "python.testing.unittestEnabled": false,
+    "[dockerfile]": {
+        "editor.tabSize": 4,
+        "editor.defaultFormatter": "ms-azuretools.vscode-containers",
+        "editor.detectIndentation": false,
+    },
+    "[python]": {
+        "editor.tabSize": 4,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "always"
+        },
+    },
     "python.testing.pytestEnabled": true,
-    "shellcheck.ignorePatterns": {
-        "**/*.envrc": true,
-        "**/*.envrc.example": true,
-        "**/*.env": true,
-        "**/*.env.example": true,
-    }
 }
