@@ -1,0 +1,97 @@
+FROM diogenes1oliveira/hadoop-nodemanager:latest-hadoop3.3.2-java8
+
+# Install build dependencies and other required packages
+RUN apt-get update && \
+    apt-get install -y \
+    # build dependencies \
+    build-essential \
+    zlib1g-dev \
+    libncurses5-dev \
+    libgdbm-dev \
+    libnss3-dev \
+    libssl-dev \
+    libreadline-dev \
+    libffi-dev \
+    libsqlite3-dev \
+    wget \
+    curl \
+    unzip \
+    sudo \
+    netcat \
+    dnsutils \
+    procps \
+    aria2 \
+    pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download and install Python 3.9.23 (last 3.9.x release)
+WORKDIR /tmp
+RUN wget https://www.python.org/ftp/python/3.9.23/Python-3.9.23.tgz && \
+    tar -xzf Python-3.9.23.tgz && \
+    cd Python-3.9.23 && \
+    ./configure --enable-optimizations --prefix=/usr && \
+    make -j$(nproc) && \
+    make altinstall && \
+    cd /tmp && \
+    rm -rf Python-3.9.23 Python-3.9.23.tgz && \
+    ln -sf /usr/bin/python3.9 /usr/bin/python3 && \
+    ln -sf /usr/bin/python3.9 /usr/bin/python && \
+    python3 -m ensurepip --upgrade
+
+# Download and install Spark 3.3.2 without Hadoop (will use base image's Hadoop)
+ARG HADOOP_VERSION=3.3.2
+ARG SPARK_VERSION=3.3.2
+ARG SCALA_VERSION=2.12
+WORKDIR /opt/hadoop-$HADOOP_VERSION/etc/spark
+RUN curl -Lfv "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-without-hadoop.tgz" > spark.tgz && \
+    tar -xvzf spark.tgz --strip-components=1 && \
+    rm -rf spark.tgz
+
+# Download and install Livy 0.8.0-incubating
+WORKDIR /opt/hadoop-$HADOOP_VERSION/etc/livy
+ARG LIVY_VERSION=0.8.0-incubating
+RUN curl -Lfv "https://archive.apache.org/dist/incubator/livy/${LIVY_VERSION}/apache-livy-${LIVY_VERSION}_$SCALA_VERSION-bin.zip" > livy.zip && \
+    unzip livy.zip && \
+    mv apache-livy-${LIVY_VERSION}_$SCALA_VERSION-bin/* . && \
+    rm -rf livy.zip apache-livy-${LIVY_VERSION}_$SCALA_VERSION-bin/ && \
+    chmod +x bin/livy-server
+
+# Download minimal Hive JARs that Spark needs to avoid ClassNotFoundException
+# even though we're not using Hive functionality
+WORKDIR /tmp
+RUN HIVE_VERSION=2.3.9 && \
+    # First, download the Spark Hive integration JAR (this contains HiveContext)
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/spark/spark-hive_${SCALA_VERSION}/${SPARK_VERSION}/spark-hive_${SCALA_VERSION}-${SPARK_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/spark-hive_${SCALA_VERSION}-${SPARK_VERSION}.jar && \
+    # Then download the Hive JARs that spark-hive depends on
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-exec/${HIVE_VERSION}/hive-exec-${HIVE_VERSION}-core.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-exec-${HIVE_VERSION}-core.jar && \
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-metastore/${HIVE_VERSION}/hive-metastore-${HIVE_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-metastore-${HIVE_VERSION}.jar && \
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-common/${HIVE_VERSION}/hive-common-${HIVE_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-common-${HIVE_VERSION}.jar && \
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-serde/${HIVE_VERSION}/hive-serde-${HIVE_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-serde-${HIVE_VERSION}.jar && \
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-jdbc/${HIVE_VERSION}/hive-jdbc-${HIVE_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-jdbc-${HIVE_VERSION}.jar && \
+    curl -Lf "https://repo1.maven.org/maven2/org/apache/hive/hive-beeline/${HIVE_VERSION}/hive-beeline-${HIVE_VERSION}.jar" \
+    -o /opt/hadoop-$HADOOP_VERSION/etc/spark/jars/hive-beeline-${HIVE_VERSION}.jar
+
+WORKDIR /opt/hadoop-$HADOOP_VERSION/
+
+ENV PATH=/opt/hadoop-$HADOOP_VERSION/etc/spark/bin:$PATH \
+    SPARK_HOME=/opt/hadoop-$HADOOP_VERSION/etc/spark \
+    LIVY_HOME=/opt/hadoop-$HADOOP_VERSION/etc/livy \
+    SPARK_CONF_DIR=/opt/hadoop-$HADOOP_VERSION/etc/spark/conf \
+    SPARK_LOG_DIR=/var/log/spark \
+    SPARK_WORKER_DIR=/tmp/spark \
+    SPARK_PID_DIR=/run/spark \
+    LIVY_CONF_DIR=/opt/hadoop-$HADOOP_VERSION/etc/livy/conf \
+    LIVY_PID_DIR=/run/livy \
+    LIVY_LOG_DIR=/var/log/livy \
+    PYSPARK_PYTHON=/usr/bin/python3.9 \
+    PYSPARK_DRIVER_PYTHON=/usr/bin/python3.9 \
+    HADOOP_CONF_DIR=/opt/hadoop-$HADOOP_VERSION/etc/hadoop \
+    YARN_CONF_DIR=/opt/hadoop-$HADOOP_VERSION/etc/hadoop
+
+RUN mkdir -p $SPARK_LOG_DIR $SPARK_WORKER_DIR $SPARK_PID_DIR $LIVY_PID_DIR $LIVY_LOG_DIR

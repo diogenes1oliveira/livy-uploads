@@ -1,0 +1,16 @@
+/tmp
+/var
+/.direnv
+/.venv
+*.env
+*.envrc
+/build
+/dist
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+.coverage.*
+.hypothesis
+*.log

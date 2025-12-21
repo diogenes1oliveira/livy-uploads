@@ -1,113 +1,159 @@
-version: "2.4"
+
+x-hadoop-env: &hadoop-env
+  CORE_CONF_fs_defaultFS: "hdfs://namenode.localhost:9002"
+  HDFS_CONF_dfs_namenode_rpc___address: "namenode.localhost:9002"
+  CORE_CONF_hadoop_http_staticuser_user: "root"
+  CORE_CONF_hadoop_proxyuser_hue_hosts: "*"
+  CORE_CONF_hadoop_proxyuser_hue_groups: "*"
+  CORE_CONF_io_compression_codecs: "org.apache.hadoop.io.compress.SnappyCodec"
+  HDFS_CONF_dfs_webhdfs_enabled: "true"
+  HDFS_CONF_dfs_permissions_enabled: "false"
+  HDFS_CONF_dfs_namenode_datanode_registration_ip___hostname___check: "false"
+  YARN_CONF_yarn_log___aggregation___enable: "true"
+  YARN_CONF_yarn_log_server_url: "http://historyserver.localhost:8188/applicationhistory/logs/"
+  YARN_CONF_yarn_resourcemanager_recovery_enabled: "true"
+  YARN_CONF_yarn_resourcemanager_store_class: "org.apache.hadoop.yarn.server.resourcemanager.recovery.FileSystemRMStateStore"
+  YARN_CONF_yarn_resourcemanager_scheduler_class: "org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler"
+  YARN_CONF_yarn_scheduler_capacity_root_default_maximum___allocation___mb: "8192"
+  YARN_CONF_yarn_scheduler_capacity_root_default_maximum___allocation___vcores: "4"
+  YARN_CONF_yarn_resourcemanager_fs_state___store_uri: "/rmstate"
+  YARN_CONF_yarn_resourcemanager_system___metrics___publisher_enabled: "true"
+  YARN_CONF_yarn_resourcemanager_hostname: "resourcemanager.localhost"
+  YARN_CONF_yarn_resourcemanager_address: "resourcemanager.localhost:8032"
+  YARN_CONF_yarn_resourcemanager_scheduler_address: "resourcemanager.localhost:8030"
+  YARN_CONF_yarn_resourcemanager_resource__tracker_address: "resourcemanager.localhost:8031"
+  YARN_CONF_yarn_timeline___service_enabled: "true"
+  YARN_CONF_yarn_timeline___service_generic___application___history_enabled: "true"
+  YARN_CONF_yarn_timeline___service_hostname: "historyserver.localhost"
+  YARN_CONF_mapreduce_map_output_compress: "true"
+  YARN_CONF_mapred_map_output_compress_codec: "org.apache.hadoop.io.compress.SnappyCodec"
+  YARN_CONF_yarn_nodemanager_resource_memory___mb: "16384"
+  YARN_CONF_yarn_nodemanager_resource_cpu___vcores: "8"
+  YARN_CONF_yarn_nodemanager_disk___health___checker_max___disk___utilization___per___disk___percentage: "98.5"
+  YARN_CONF_yarn_nodemanager_remote___app___log___dir: "/app-logs"
+  YARN_CONF_yarn_nodemanager_aux___services: "mapreduce_shuffle"
+  YARN_CONF_yarn_nodemanager_local___dirs: "/tmp"
+  MAPRED_CONF_mapreduce_framework_name: "yarn"
+  MAPRED_CONF_mapred_child_java_opts: "-Xmx4096m"
+  MAPRED_CONF_mapreduce_map_memory_mb: "4096"
+  MAPRED_CONF_mapreduce_reduce_memory_mb: "8192"
+  MAPRED_CONF_mapreduce_map_java_opts: "-Xmx3072m"
+  MAPRED_CONF_mapreduce_reduce_java_opts: "-Xmx6144m"
+  MAPRED_CONF_yarn_app_mapreduce_am_env: "HADOOP_MAPRED_HOME=/opt/hadoop-${HADOOP_VERSION:-3.3.2}/"
+  MAPRED_CONF_mapreduce_map_env: "HADOOP_MAPRED_HOME=/opt/hadoop-${HADOOP_VERSION:-3.3.2}/"
+  MAPRED_CONF_mapreduce_reduce_env: "HADOOP_MAPRED_HOME=/opt/hadoop-${HADOOP_VERSION:-3.3.2}/"
 
 services:
-  livy:
-    depends_on:
-      - master
-    restart: unless-stopped
+  namenode:
+    image: diogenes1oliveira/hadoop-namenode:latest-hadoop3.3.2-java8
+    container_name: namenode
+    hostname: namenode.localhost
     networks:
-      docker.internal:
-        aliases:
-          - livy.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    image: livy-uploads-dev-build:latest
-    hostname: livy
-    mem_limit: 3g
-    cpus: 2
+      - localhost
+    ports:
+      - 9870:9870
+      - 9002:9000
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    environment:
+      <<: *hadoop-env
+      CLUSTER_NAME: test
+
+  datanode:
+    image: diogenes1oliveira/hadoop-datanode:latest-hadoop3.3.2-java8
+    container_name: datanode
+    hostname: datanode.localhost
+    networks:
+      - localhost
+    ports:
+      - 9864:9864
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: "namenode.localhost:9870"
+
+  resourcemanager:
+    image: diogenes1oliveira/hadoop-resourcemanager:latest-hadoop3.3.2-java8
+    container_name: resourcemanager
+    hostname: resourcemanager.localhost
+    networks:
+      - localhost
+    ports:
+      - 8088:8088
+    environment:
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864"
+
+  historyserver:
+    image: diogenes1oliveira/hadoop-historyserver:latest-hadoop3.3.2-java8
+    container_name: historyserver
+    hostname: historyserver.localhost
+    networks:
+      - localhost
+    ports:
+      - 8188:8188
+    environment:
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864 resourcemanager.localhost:8088"
+    volumes:
+      - hadoop_historyserver:/hadoop/yarn/timeline
+
+  livy:
+    image: hadoop-nodemanager-livy
     build:
-      context: .
-      dockerfile: ./Dockerfile.spark
+      dockerfile: ./Dockerfile.livy
       args:
-        - USER_NAME=${USER_NAME:-app}
-        - USER_UID=${USER_UID?error}
-        - USER_GID=${USER_GID?error}
-    command:
-      - bash
-      - -c
-      - |
-        set -eu
-        export SPARK_MASTER_IP="$$(dig +short master.docker.internal)"
-        touch /var/log/livy-uploads-bg.log
-        tail -f /var/log/livy-uploads-bg.log &
-        bash /etc/livy/bin/livy-server
+        - HADOOP_VERSION=${HADOOP_VERSION:-3.3.2}
+    container_name: livy
+    hostname: livy.localhost
+    networks:
+      - localhost
     ports:
       - 8998:8998
-      - 4040:4040
-    working_dir: /tmp
-    volumes:
-      - ./.dev/conf/spark:/etc/spark/conf
-      - ./.dev/conf/livy:/etc/livy/conf
-      - ./:/app:ro
+    command: /opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/bin/livy-server
     environment:
-      - SPARK_PUBLIC_DNS=localhost
-      - BG_LOG_PATH=/var/log/livy-uploads-bg.log
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: "historyserver.localhost:8188"
+    volumes:
+      - .dev/conf/livy:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/conf
+      - .dev/conf/spark:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/spark/conf
 
-  master:
+  nodemanager1:
+    image: hadoop-nodemanager-livy
+    build:
+      dockerfile: ./Dockerfile.livy
+    container_name: nodemanager1
+    hostname: nodemanager1.localhost
     networks:
-      docker.internal:
-        aliases:
-          - master.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    hostname: master
-    image: livy-uploads-dev-build:latest
-    mem_limit: 3g
-    cpus: 2
-    environment:
-      - SPARK_PUBLIC_DNS=localhost
-    command:
-      - /bin/bash
-      - -c
-      - |
-        set -eu
-        mkdir -p $$SPARK_LOG_DIR
-        touch $$SPARK_LOG_DIR/spark--org.apache.spark.deploy.master.Master-1-spark-master.out /var/log/livy-uploads-bg.log
-        /etc/spark/sbin/start-master.sh
-        tail -f $$SPARK_LOG_DIR/*.out /var/log/livy-uploads-bg.log
+      - localhost
     ports:
-      - 8080:8080 # master spark UI
-    volumes:
-      - ./.dev/conf/spark:/etc/spark/conf
-      - ./.dev/conf/livy:/etc/livy/conf
-  worker1:
-    depends_on:
-      - master
+      - 8041:8041
+    environment:
+      <<: *hadoop-env
+      YARN_CONF_yarn_nodemanager_webapp_address: "0.0.0.0:8041"
+      SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864 resourcemanager.localhost:8088"
+
+  nodemanager2:
+    image: hadoop-nodemanager-livy
+    build:
+      dockerfile: ./Dockerfile.livy
+    container_name: nodemanager2
+    hostname: nodemanager2.localhost
     networks:
-      docker.internal:
-        aliases:
-          - worker1.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    image: livy-uploads-dev-build:latest
-    hostname: worker1
-    mem_limit: 3g
-    cpus: 2
-    environment:
-      - SPARK_PUBLIC_DNS=localhost
-      - BG_LOG_PATH=/var/log/livy-uploads-bg.log
+      - localhost
     ports:
-      - 8081:8081 # worker spark UI
-    command:
-      - /bin/bash
-      - -c
-      - |
-        export SPARK_MASTER_IP="$$(dig +short master.docker.internal)"
-        mkdir -p $$SPARK_LOG_DIR
-        touch $$SPARK_LOG_DIR/spark--org.apache.spark.deploy.worker.Worker-1-spark-worker1.out /var/log/livy-uploads-bg.log
-        /etc/spark/sbin/start-worker.sh spark://master.docker.internal:7077
-        tail -f $$SPARK_LOG_DIR/*.out /var/log/livy-uploads-bg.log
-    volumes:
-      - ./.dev/conf/spark:/etc/spark/conf
-      - ./.dev/conf/livy:/etc/livy/conf
+      - 8042:8042
+    environment:
+      <<: *hadoop-env
+      YARN_CONF_yarn_nodemanager_webapp_address: "0.0.0.0:8042"
+      SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864 resourcemanager.localhost:8088"
 
   proxy:
-    depends_on:
-      - master
     networks:
-      docker.internal:
+      localhost:
         aliases:
-          - proxy.docker.internal
+          - proxy.localhost
     image: vimagick/tinyproxy
     mem_limit: 1g
     cpus: 1
@@ -115,12 +161,10 @@ services:
       - "8090:8888"
 
   jupyter:
-    depends_on:
-      - master
     networks:
-      docker.internal:
+      localhost:
         aliases:
-          - jupyter.docker.internal
+          - jupyter.localhost
     build:
       context: .
       dockerfile: ./Dockerfile.jupyter
@@ -133,19 +177,24 @@ services:
     ports:
       - "8888:8888"
     user: "${USER_NAME:-app}"
-    entrypoint:
-      - /bin/bash
-      - -c
     environment:
       - SPARKMAGIC_CONF_DIR=/app/.dev/conf/sparkmagic/
+      - SERVICE_PRECONDITION=livy.localhost:8998
     command:
+      - bash
+      - -c
       - |
         set -eux
         pip install -e .
-        exec jupyter lab --no-browser --allow-root --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token= --NotebookApp.password=
+        exec jupyter lab --no-browser --allow-root --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token= --NotebookApp.password= --FileContentsManager.allow_hidden=True
     working_dir: /app
     volumes:
       - ./:/app
 
 networks:
-  docker.internal:
+  localhost:
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  hadoop_historyserver:

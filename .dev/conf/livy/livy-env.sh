@@ -33,3 +33,12 @@
 # - LIVY_CLASSPATH  Override if the additional classpath is required.
 
 LIVY_SERVER_JAVA_OPTS='-XX:+UseContainerSupport'
+
+_default_livy_jars="$(find /opt/hadoop-3.3.2/etc/livy/ -name '*.jar' -print0 | tr '\0' ':')"
+_hive_spark_jars="$(find /opt/hadoop-3.3.2/etc/spark/jars/ -name 'hive-*.jar' -print0 | tr '\0' ':')"
+LIVY_SERVER_CLASSPATH="$_default_livy_jars:$(hadoop classpath):$_hive_spark_jars"
+LIVY_CLASSPATH="$LIVY_SERVER_CLASSPATH"
+
+SPARK_CONF_DIR=/opt/hadoop-3.3.2/etc/spark/conf
+HADOOP_CONF_DIR=/opt/hadoop-3.3.2/etc/hadoop
+YARN_CONF_DIR=/opt/hadoop-3.3.2/etc/hadoop

@@ -72,3 +72,8 @@
 # - MKL_NUM_THREADS=1        Disable multi-threading of Intel MKL
 # - OPENBLAS_NUM_THREADS=1   Disable multi-threading of OpenBLAS
 SPARK_DAEMON_JAVA_OPTS='-XX:+UseContainerSupport'
+export SPARK_DIST_CLASSPATH="$(hadoop classpath)"
+
+SPARK_CONF_DIR=/opt/hadoop-3.3.2/etc/spark/conf
+HADOOP_CONF_DIR=/opt/hadoop-3.3.2/etc/hadoop
+YARN_CONF_DIR=/opt/hadoop-3.3.2/etc/hadoop
