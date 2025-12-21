@@ -61,6 +61,8 @@ class LivyEndpoint:
                     "https": self.proxy,
                 }
             )
+        else:
+            self.requests_session.proxies = {}
 
     @property
     def auth(self) -> Any:

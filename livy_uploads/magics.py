@@ -1,7 +1,9 @@
 # mypy: disable-error-code="misc,import-untyped"
 
+import json
 import logging
 import os
+import sys
 import traceback
 from functools import wraps
 from pathlib import Path, PurePosixPath
@@ -22,9 +24,10 @@ from sparkmagic.livyclientlib.exceptions import (
 from sparkmagic.livyclientlib.sparkcontroller import SparkController
 from sparkmagic.utils.sparklogger import SparkLog
 
-from livy_uploads.logs import configure_logger
+from livy_uploads.client.models import SessionInfo
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
-from livy_uploads.paths import find_first_in_paths, resolve_pathspec, load_envfile, NBLIB_PATH_ENVVAR
+from livy_uploads.logs import configure_logger
+from livy_uploads.paths import NBLIB_PATH_ENVVAR, find_first_in_paths, load_envfile, resolve_pathspec
 from livy_uploads.session import LivyCommand, LivySession
 
 F = TypeVar("F", bound=Callable)
@@ -241,8 +244,8 @@ class LivyUploaderMagics(Magics):
             print(l)
         self.ipython_display.write(f"$ command exited with code {returncode} (pid={pid})")
         local_ns = local_ns or {}
-        local_ns["shell_output"] = output  # type: ignore
-        local_ns["shell_returncode"] = returncode  # type: ignore
+        local_ns["shell_output"] = output
+        local_ns["shell_returncode"] = returncode
 
     _logs_follower: Iterator[List[str]] = None  # type: ignore
 
@@ -393,6 +396,51 @@ class LivyUploaderMagics(Magics):
 
         configure_logger()
 
+    @magic_arguments()
+    @argument(
+        "-s",
+        "--session-name",
+        type=str,
+        default=None,
+        help="Name of the Livy client to use. If not provided, uses the default one",
+    )
+    @argument(
+        "--no-refresh",
+        action="store_true",
+        default=False,
+        help="Do not refresh the session information",
+    )
+    @line_magic
+    def session_info(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
+        """
+        Prints the session information
+        """
+        if not (ipython := get_ipython()):
+            raise UsageError("no IPython shell found")
+
+        if cell and cell.strip():
+            raise UsageError("%%session_info magic must be used without a cell body")
+
+        args = parse_argstring(LivyUploaderMagics.session_info, line)
+        session_name = getattr(args, "session_name", None)
+        refresh = not getattr(args, "no_refresh", False)
+
+        session = get_session(session_name)
+        if refresh:
+            raw_info = session.refresh()
+        else:
+            raw_info = session.session_info
+
+        try:
+            session_info = SessionInfo.parse(raw_info)
+        except ValueError:
+            sys.stderr.write("failed to parse raw session info: " + json.dumps(raw_info) + "\n")
+            sys.stderr.flush()
+            # raise
+        else:
+            sys.stdout.write(json.dumps(session_info.as_json(), indent=2))
+            sys.stdout.flush()
+
 
 def load_ipython_extension(ipython: Any) -> None:
     """
@@ -409,7 +457,7 @@ def get_session(session_name: Optional[str] = None) -> "LivySession":
     """
     Creates a session endpoint instance from the current IPython shell
     """
-    cell_magics = get_ipython().magics_manager.magics["cell"]  # type: ignore
+    cell_magics = get_ipython().magics_manager.magics["cell"]
 
     try:
         magic_name = "send_to_spark"
