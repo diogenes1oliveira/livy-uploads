@@ -15,25 +15,24 @@ FROM base AS exporter
 WORKDIR /app
 COPY ./pyproject.toml ./uv.lock ./
 
-RUN uv pip compile pyproject.toml > requirements.txt && \
-    uv pip compile --group dev > requirements-dev.txt && \
-    uv pip compile --group jupyter > requirements-jupyter.txt && \
-    uv pip compile --group magics > requirements-magics.txt && \
-    uv pip compile --group kerberos > requirements-kerberos.txt
+RUN uv export --no-hashes --format requirements-txt --no-emit-project --no-default-groups > requirements.txt && \
+    uv export --no-hashes --format requirements-txt --no-emit-project --only-group dev > requirements-dev.txt && \
+    uv export --no-hashes --format requirements-txt --no-emit-project --only-group jupyter > requirements-jupyter.txt && \
+    uv export --no-hashes --format requirements-txt --no-emit-project --only-group magics > requirements-magics.txt && \
+    uv export --no-hashes --format requirements-txt --no-emit-project --only-group kerberos > requirements-kerberos.txt
 
 FROM base
 
 WORKDIR /etc/app
-COPY --from=exporter /app/requirements-magics.txt ./requirements-kerberos.txt
+COPY --from=exporter /app/requirements-kerberos.txt ./requirements-kerberos.txt
 RUN pip3 install --no-cache-dir -r ./requirements-kerberos.txt
 COPY --from=exporter /app/requirements-magics.txt ./requirements-magics.txt
 RUN pip3 install --no-cache-dir -r ./requirements-magics.txt
 COPY --from=exporter /app/requirements-jupyter.txt ./requirements-jupyter.txt
 RUN pip3 install --no-cache-dir -r ./requirements-jupyter.txt
-COPY --from=exporter /app/requirements-dev.txt ./requirements-dev.txt
-RUN pip3 install --no-cache-dir -r ./requirements-dev.txt
 COPY --from=exporter /app/requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r ./requirements.txt
+
 RUN if ! SPARK_MAGIC_PATH="$(pip3 show sparkmagic | grep -E 'Location:' | cut -d' ' -f2)" || ! [ -d "$SPARK_MAGIC_PATH" ]; then \
     echo >&2 "ERROR: couldn't find path to sparkmagic. OUTPUT: "; \
     pip3 show sparkmagic 2>&1 | sed 's/^/>  /'; \

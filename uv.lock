@@ -2045,9 +2045,12 @@ jupyter = [
 ]
 kerberos = [
     { name = "gssapi" },
+    { name = "pyspnego" },
     { name = "requests-gssapi" },
+    { name = "requests-kerberos" },
 ]
 magics = [
+    { name = "pyspark" },
     { name = "sparkmagic" },
 ]
 
@@ -2062,7 +2065,7 @@ dev = [
     { name = "build", specifier = ">=1.3.0" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "papermill", specifier = ">=2.6.0" },
-    { name = "pyspark", specifier = "==3.3.1" },
+    { name = "pyspark", specifier = "==3.3.2" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
@@ -2081,9 +2084,14 @@ jupyter = [
 ]
 kerberos = [
     { name = "gssapi", specifier = ">=1.10.1" },
+    { name = "pyspnego", specifier = ">=0.12.0" },
     { name = "requests-gssapi", specifier = ">=1.4.0" },
+    { name = "requests-kerberos", specifier = ">=0.15.0" },
 ]
-magics = [{ name = "sparkmagic", specifier = ">=0.23.0" }]
+magics = [
+    { name = "pyspark", specifier = ">=3.3" },
+    { name = "sparkmagic", specifier = ">=0.23.0" },
+]
 
 [[package]]
 name = "markdown-it-py"
@@ -3135,12 +3143,12 @@ wheels = [
 
 [[package]]
 name = "pyspark"
-version = "3.3.1"
+version = "3.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "py4j" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/48/cc321e742a93320c681b3c7a9fd405d518c6326c89da3d67e35b9868e941/pyspark-3.3.1.tar.gz", hash = "sha256:e99fa7de92be406884bfd831c32b9306a3a99de44cfc39a2eefb6ed07445d5fa", size = 281393542, upload-time = "2022-10-25T07:47:50.596Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/08/87b404b8b3255d46caf0ecdccf871d501a2b58da9b844d3f9710ce9d4d53/pyspark-3.3.2.tar.gz", hash = "sha256:0dfd5db4300c1f6cc9c16d8dbdfb82d881b4b172984da71344ede1a9d4893da8", size = 281376518, upload-time = "2023-02-15T22:42:59.294Z" }
 
 [[package]]
 name = "pyspnego"
