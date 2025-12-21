@@ -1,6 +1,6 @@
-[![Build](https://github.com/diogenes1oliveira/livy-uploads/actions/workflows/publish.yml/badge.svg)](https://github.com/diogenes1oliveira/livy-uploads/actions/workflows/publish.yml)
 [![PyPI](https://img.shields.io/pypi/v/livy-uploads.svg)](https://pypi.org/project/livy-uploads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Build](https://github.com/diogenes1oliveira/livy-uploads/actions/workflows/publish.yml/badge.svg)](https://github.com/diogenes1oliveira/livy-uploads/actions/workflows/publish.yml)
 
 # livy-uploads
 
