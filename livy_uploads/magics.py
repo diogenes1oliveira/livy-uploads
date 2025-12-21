@@ -1,5 +1,6 @@
 # mypy: disable-error-code="misc,import-untyped"
 
+import logging
 import os
 import traceback
 from functools import wraps
@@ -21,10 +22,13 @@ from sparkmagic.livyclientlib.exceptions import (
 from sparkmagic.livyclientlib.sparkcontroller import SparkController
 from sparkmagic.utils.sparklogger import SparkLog
 
+from livy_uploads.logs import configure_logger
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
+from livy_uploads.paths import find_first_in_paths, resolve_pathspec, load_envfile, NBLIB_PATH_ENVVAR
 from livy_uploads.session import LivyCommand, LivySession
 
 F = TypeVar("F", bound=Callable)
+LOGGER = logging.getLogger(__name__)
 
 
 def wrap_standard_exceptions(f: F) -> F:
@@ -218,6 +222,9 @@ class LivyUploaderMagics(Magics):
     @handle_expected_exceptions
     def shell_command(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
         "Executes an adhoc shell command in the remote Spark master"
+        if local_ns is None:
+            raise UsageError("local_ns is required")
+
         args = parse_argstring(LivyUploaderMagics.shell_command, line)
         command = cell.strip()
 
@@ -234,8 +241,8 @@ class LivyUploaderMagics(Magics):
             print(l)
         self.ipython_display.write(f"$ command exited with code {returncode} (pid={pid})")
         local_ns = local_ns or {}
-        local_ns["shell_output"] = output
-        local_ns["shell_returncode"] = returncode
+        local_ns["shell_output"] = output  # type: ignore
+        local_ns["shell_returncode"] = returncode  # type: ignore
 
     _logs_follower: Iterator[List[str]] = None  # type: ignore
 
@@ -293,6 +300,99 @@ class LivyUploaderMagics(Magics):
         for line in lines:
             print(line)
 
+    @needs_local_scope
+    @line_magic
+    def nblib(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
+        """
+        Finds and loads an .ipynb library file into the current notebook.
+
+        The library pathspec search paths can be set via either:
+            - the local __nblib_path__ variable in the entrypoint notebook;
+            - the environment variable $NBLIB_PATH.
+
+        If the path is relative, we will also try to load it from the current directory.
+        """
+        if local_ns is None:
+            raise UsageError("local_ns is required")
+
+        ipython = get_ipython()
+        if ipython is None:
+            raise UsageError("no IPython shell found")
+
+        if cell and cell.strip():
+            raise UsageError("%nblib magic must be used without a cell body")
+
+        if not (line := line.strip()):
+            raise UsageError("%nblib magic must be used with the path argument")
+
+        path = PurePosixPath(line)
+
+        try:
+            nblib_pathspec = local_ns["__nblib_path__"]
+        except KeyError:
+            # save the resolved path in the namespace and in os.environ,
+            # so it's not resolved in downstream notebooks
+            local_ns["__nblib_path__"] = resolve_pathspec(save=True)
+        else:
+            # save only if not already set in the environment, making sure it's not
+            # overriden in downstream notebooks
+            if os.getenv(NBLIB_PATH_ENVVAR) is None:
+                local_ns["__nblib_path__"] = resolve_pathspec(nblib_pathspec, save=True)
+
+        resolved_path = find_first_in_paths([path])
+
+        LOGGER.warning("resolved %%run %s to %s", path, resolved_path)
+        ipython.run_line_magic("run", str(resolved_path))
+
+    @needs_local_scope
+    @line_magic
+    def dotenv(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
+        """
+        Finds and loads a dotenv file into the current environment.
+
+        The env filename can be overriden via `__dotenv_names__` local variable in the notebook, defaulting to
+        `("env", ".env")`.
+        """
+        if local_ns is None:
+            raise UsageError("local_ns is required")
+
+        if cell and cell.strip():
+            raise UsageError("%%dotenv magic must be used without a cell body")
+
+        if line := line.strip():
+            filenames = line.split()
+            required = True
+        else:
+            filenames = [".env", "env"]
+            required = False
+
+        # # Auto-configure logging if root logger hasn't been set up yet
+        # root_logger = logging.getLogger()
+        # if not root_logger.handlers or root_logger.level == logging.WARNING:
+        #     configure_logger()
+
+        load_envfile(*filenames, required=required)
+
+    @needs_local_scope
+    @line_magic
+    def configure_logging(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
+        """
+        Configures logging according to the $LOG_LEVEL environment variable.
+        """
+        if local_ns is None:
+            raise UsageError("local_ns is required")
+
+        if not (ipython := get_ipython()):
+            raise UsageError("no IPython shell found")
+
+        if cell and cell.strip():
+            raise UsageError("%%configure_logging magic must be used without a cell body")
+
+        if line := line.strip():
+            raise UsageError("%%configure_logging magic must be used without arguments")
+
+        configure_logger()
+
 
 def load_ipython_extension(ipython: Any) -> None:
     """
@@ -309,7 +409,7 @@ def get_session(session_name: Optional[str] = None) -> "LivySession":
     """
     Creates a session endpoint instance from the current IPython shell
     """
-    cell_magics = get_ipython().magics_manager.magics["cell"]
+    cell_magics = get_ipython().magics_manager.magics["cell"]  # type: ignore
 
     try:
         magic_name = "send_to_spark"
