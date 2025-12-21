@@ -31,6 +31,7 @@ dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
+    "pytest-env>=1.1.5",
     "pytest-mock>=3.15.1",
     "ruff>=0.14.10",
     "twine>=6.2.0",
@@ -51,6 +52,9 @@ testpaths = ["tests", "livy_uploads"]
 asyncio_mode = "auto"
 addopts = "--doctest-modules --ignore=var/ --ignore=.dev/ --ignore=tmp/ --ignore=.direnv/ --ignore=.venv/"
 
+[tool.pytest_env]
+LIVY_TEST_SESSION_TTL = "120s"
+LIVY_TEST_SESSION_READINESS_TIMEOUT = "60"
 
 [tool.mypy]
 python_version = "3.9"
