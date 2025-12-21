@@ -7,13 +7,13 @@ from io import BytesIO
 from logging import getLogger
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 from uuid import uuid4
 
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.retry_policy_old import TimeoutRetryPolicy
 from livy_uploads.session import LivyCommand, LivySession
-from livy_uploads.utils import assert_type
+from livy_uploads.utils.retry_policy import MaxTime
+from livy_uploads.utils.typeutils import assert_type
 
 LOGGER = getLogger(__name__)
 T = TypeVar("T")
@@ -23,20 +23,10 @@ class CodeRetriableError(Exception):
     pass
 
 
-class CodeRetryPolicy(TimeoutRetryPolicy):
-    def __init__(self, timeout: float, pause: float):
-        super().__init__(timeout, pause)
-        self.timeout = timeout
-        self.pause = pause
-
-    def should_retry(self, e: Exception) -> bool:
-        return super().should_retry(e) and isinstance(e, CodeRetriableError)
-
-
 StrOrPath = Union[str, Path]
 
 
-class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
+class LivyRunCode(LivyCommand[tuple[list[str], Any]]):
     """
     Executes the code in the global namespace of the remote Livy session.
 
@@ -49,7 +39,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
         pause: float = 0.3,
         run_timeout: float = 30.0,
         request_timeout: float = 5.0,
-        vars: Optional[Dict[str, Any]] = None,
+        vars: Optional[dict[str, Any]] = None,
     ):
         """
         Args:
@@ -61,7 +51,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
         """
         self.code = code
         self.vars = vars or {}
-        self.retry_policy = CodeRetryPolicy(run_timeout, pause)
+        self.retry_policy = MaxTime(time=run_timeout, pause=pause)
         self.request_timeout = request_timeout
 
     def run(self, session: "LivySession") -> Any:
@@ -108,7 +98,7 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
             else:
                 raise Exception(f"statement failed to execute: {st}")
 
-        st = self.retry_policy.run(_check)
+        st = self.retry_policy.run(_check, exceptions=(CodeRetriableError,))
 
         output = st["output"]
         if output["status"] != "ok":
@@ -118,12 +108,12 @@ class LivyRunCode(LivyCommand[Tuple[List[str], Any]]):
                 output["traceback"],
             )
         try:
-            lines: List[str] = output["data"]["text/plain"].strip().splitlines()
-        except KeyError:
-            raise Exception(f"non-textual output: {output}")
+            lines: list[str] = output["data"]["text/plain"].strip().splitlines()
+        except KeyError as e:
+            raise Exception(f"non-textual output: {output}") from e
 
         try:
-            final_lines: List[str] = []
+            final_lines: list[str] = []
             for line in lines:
                 if not line.startswith("LivyUploads:pickled_b64"):
                     final_lines.append(line)
@@ -244,13 +234,13 @@ class LivyUploadFile(LivyCommand[str]):
         merge_cmd = LivyRunCode(
             request_timeout=self.request_timeout,
             run_timeout=self.run_timeout,
-            vars=dict(
-                basename=basename,
-                num_chunks=num_chunks,
-                dest_path=self.dest_path,
-                mode=self.mode,
-            ),
-            code=f"""
+            vars={
+                "basename": basename,
+                "num_chunks": num_chunks,
+                "dest_path": self.dest_path,
+                "mode": self.mode,
+            },
+            code="""
                 import os
                 import os.path
                 import pyspark
@@ -262,7 +252,7 @@ class LivyUploadFile(LivyCommand[str]):
 
                 with open(dest_path, 'wb') as fp:
                     for i in range(num_chunks):
-                        chunk_name = f'{{basename}}.{{i}}'
+                        chunk_name = f'{basename}.{i}'
                         with open(pyspark.SparkFiles.get(chunk_name), 'rb') as chunk_fp:
                             fp.write(chunk_fp.read())
 
@@ -342,14 +332,14 @@ class LivyUploadDir(LivyCommand[str]):
             upload_cmd.run(session)
 
         extract_cmd = LivyRunCode(
-            vars=dict(
-                archive_dest=archive_dest,
-                dest_path=self.dest_path,
-                mode=self.mode,
-            ),
+            vars={
+                "archive_dest": archive_dest,
+                "dest_path": self.dest_path,
+                "mode": self.mode,
+            },
             request_timeout=self.request_timeout,
             run_timeout=self.unpack_timeout,
-            code=f"""
+            code="""
                 import os
                 import shutil
 
@@ -375,7 +365,7 @@ class LivyUploadDir(LivyCommand[str]):
         return assert_type(path, str)
 
 
-class LivyRunShell(LivyCommand[Tuple[int, str, Optional[int]]]):
+class LivyRunShell(LivyCommand[tuple[int, str, Optional[int]]]):
     """
     Executes a shell command in the remote Spark session.
     """
@@ -392,16 +382,16 @@ class LivyRunShell(LivyCommand[Tuple[int, str, Optional[int]]]):
         self.run_timeout = run_timeout
         self.stop_timeout = stop_timeout
 
-    def run(self, session: "LivySession") -> Tuple[int, str, Optional[int]]:
+    def run(self, session: "LivySession") -> tuple[int, str, Optional[int]]:
         """
         Executes the command and returns the PID, the output and the return code.
         """
         code_cmd = LivyRunCode(
-            vars=dict(
-                command=self.command,
-                run_timeout=self.run_timeout,
-                stop_timeout=self.stop_timeout,
-            ),
+            vars={
+                "command": self.command,
+                "run_timeout": self.run_timeout,
+                "stop_timeout": self.stop_timeout,
+            },
             code="""
                 import subprocess
 

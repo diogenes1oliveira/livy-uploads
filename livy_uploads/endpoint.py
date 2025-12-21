@@ -1,14 +1,15 @@
 import threading
+from collections.abc import Mapping
 from logging import getLogger
-from typing import Any, Dict, Mapping, Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 import requests
 import requests.exceptions
 
 from livy_uploads.auth import Authenticator
 from livy_uploads.exceptions import LivyRequestError, LivyRetriableError
-from livy_uploads.retry_policy_old import DontRetryPolicy, RetryPolicy, WithExceptionsPolicy
-from livy_uploads.utils import assert_type, try_decode
+from livy_uploads.utils.retry_policy import MaxTries, NoRetry, RetryPolicy
+from livy_uploads.utils.typeutils import assert_type, try_decode
 
 LOGGER = getLogger(__name__)
 T = TypeVar("T")
@@ -22,7 +23,7 @@ class LivyEndpoint:
     def __init__(
         self,
         url: str,
-        default_headers: Optional[Dict[str, str]] = None,
+        default_headers: Optional[dict[str, str]] = None,
         verify: Optional[bool] = True,
         authenticator: Optional[Authenticator] = None,
         requests_session: Optional[requests.Session] = None,
@@ -49,7 +50,7 @@ class LivyEndpoint:
         self.authenticator = authenticator
         self._auth_lock = threading.RLock()
         self.requests_session = requests_session or requests.Session()
-        self.retry_policy = retry_policy or DontRetryPolicy()
+        self.retry_policy = retry_policy or NoRetry()
 
         self.requests_session.trust_env = False
         self.proxy = proxy or None
@@ -90,12 +91,21 @@ class LivyEndpoint:
                 }
             )
 
+        retry_config = config.get("retry_policy")
+        if retry_config:
+            retry_policy: RetryPolicy = MaxTries(
+                count=assert_type(retry_config["max_tries"], int),
+                pause=assert_type(retry_config["pause"], float),
+            )
+        else:
+            retry_policy = NoRetry()
+
         return cls(
             url=assert_type(config["url"], str),
             default_headers=assert_type(config.get("default_headers"), Optional[dict]),  # type: ignore
             verify=assert_type(config.get("verify"), Optional[bool]),  # type: ignore
             authenticator=Authenticator.from_config(config.get("auth")),
-            retry_policy=RetryPolicy.from_config(config.get("retry_policy")),
+            retry_policy=retry_policy,
             proxy=proxy,
         )
 
@@ -105,7 +115,7 @@ class LivyEndpoint:
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.url!r})"
 
-    def build_headers(self, headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    def build_headers(self, headers: Optional[dict[str, str]] = None) -> dict[str, str]:
         """
         Merges the list of default headers with the provided headers, and normalizes the keys to lowercase
         """
@@ -130,29 +140,33 @@ class LivyEndpoint:
         - retry_policy: an optional retry policy to use for this request, defaults to the one configured in the endpoint
         - kwargs: extra arguments to pass to `requests.Session.request`
         """
-        retry_policy = WithExceptionsPolicy(retry_policy or self.retry_policy, LivyRetriableError)  # type: ignore
+        policy = retry_policy or self.retry_policy
         if headers is None:
             headers = self.default_headers
 
-        return self.retry_policy.run(
+        return policy.run(
             func=_request_do,
-            session=self.requests_session,
-            method=method,
-            url=self.url + path,
-            headers=headers,
-            auth=self.auth,
-            verify=self.verify,
-            **kwargs,
+            kwargs={
+                "session": self.requests_session,
+                "method": method,
+                "url": self.url + path,
+                "headers": headers,
+                "auth": self.auth,
+                "verify": self.verify,
+                **kwargs,
+            },
+            exceptions=(LivyRetriableError,),
         )
 
 
 def _request_do(
     session: requests.Session,
-    *args: Any,
+    method: str,
+    url: str,
     **kwargs: Any,
 ) -> requests.Response:
     try:
-        response = session.request(*args, **kwargs)
+        response = session.request(method, url, **kwargs)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         raise LivyRetriableError from e
 

@@ -4,7 +4,7 @@ from typing import Any, Callable, Mapping, Optional, TypeVar
 
 from typing_extensions import Self
 
-from livy_uploads.utils import assert_type
+from livy_uploads.utils.typeutils import assert_type
 
 T = TypeVar("T")
 E = TypeVar("E", bound=Exception)

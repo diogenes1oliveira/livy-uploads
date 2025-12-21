@@ -2,7 +2,7 @@ from typing import Optional
 
 import pytest
 
-from livy_uploads.utils import assert_type
+from livy_uploads.utils.typeutils import assert_type
 
 # mypy: disable-error-code="no-untyped-def"
 

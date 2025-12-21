@@ -1,11 +1,13 @@
+import builtins
 import itertools
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from logging import Logger, getLogger
 from threading import RLock
-from typing import Any, Dict, Generic, Iterator, List, Mapping, Optional, Set, TypeVar
+from typing import Any, Generic, Optional, TypeVar
 
 import requests
 from typing_extensions import Self
@@ -13,8 +15,8 @@ from typing_extensions import Self
 from livy_uploads.auth import Authenticator
 from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.exceptions import LivyError, LivyRequestError, LivyRetriableError
-from livy_uploads.retry_policy_old import RetryPolicy, WithExceptionsPolicy
-from livy_uploads.utils import assert_type
+from livy_uploads.utils.retry_policy import RetryPolicy
+from livy_uploads.utils.typeutils import assert_type
 
 LOGGER = getLogger(__name__)
 T = TypeVar("T")
@@ -29,8 +31,8 @@ class LivySession(LivyEndpoint):
         self,
         url: str,
         session_id: int,
-        session_info: Optional[Dict[str, Any]] = None,
-        default_headers: Optional[Dict[str, str]] = None,
+        session_info: Optional[dict[str, Any]] = None,
+        default_headers: Optional[dict[str, str]] = None,
         verify: bool = True,
         authenticator: Optional[Authenticator] = None,
         requests_session: Optional[requests.Session] = None,
@@ -70,9 +72,9 @@ class LivySession(LivyEndpoint):
                 f"id={self.session_id}",
                 f"name={self.session_name}",
                 f"state={self.session_state}",
-                f'app_id={self.session_info.get("appId") or None}',
-                f'ui_url={app_info.get("sparkUiUrl")}',
-                f'driver_url={app_info.get("driverLogUrl")}',
+                f"app_id={self.session_info.get('appId') or None}",
+                f"ui_url={app_info.get('sparkUiUrl')}",
+                f"driver_url={app_info.get('driverLogUrl')}",
             ]
         )
         return f"{self.__class__.__name__}({infos})"
@@ -190,7 +192,6 @@ class LivySession(LivyEndpoint):
         """
         Waits until the session is ready
         """
-        policy = WithExceptionsPolicy(retry_policy, LivyError)  # type: ignore
 
         def run() -> None:
             state = self.refresh_state()
@@ -203,7 +204,7 @@ class LivySession(LivyEndpoint):
             if state != "idle":
                 raise RuntimeError(f"bad session state: {state!r}")
 
-        policy.run(run)
+        retry_policy.run(run, exceptions=(LivyError,))
 
     def delete(self) -> None:
         """
@@ -217,7 +218,6 @@ class LivySession(LivyEndpoint):
         """
         Waits until the session is finished
         """
-        policy = WithExceptionsPolicy(retry_policy, LivyRetriableError)  # type: ignore
 
         def run() -> None:
             state = self.refresh_state()
@@ -231,9 +231,9 @@ class LivySession(LivyEndpoint):
             self.logger.info("session is still in state %r, waiting...", state)
             raise LivyRetriableError
 
-        policy.run(run)
+        retry_policy.run(run, exceptions=(LivyRetriableError,))
 
-    def refresh(self) -> Dict[str, Any]:
+    def refresh(self) -> dict[str, Any]:
         """
         Refreshes all the information for the session
         """
@@ -261,7 +261,7 @@ class LivySession(LivyEndpoint):
         self.session_info["state"] = state
         return assert_type(state, str)
 
-    def follow(self, page_size: int = 500) -> Iterator[List[str]]:
+    def follow(self, page_size: int = 500) -> Iterator[builtins.list[str]]:
         """
         Iterates over the logs of the session.
 
@@ -275,7 +275,7 @@ class LivySession(LivyEndpoint):
         - the batch of log lines. If it returns one with zero lines, you probably should add a bigger pause
         before the next iteration to avoid hitting the server too hard.
         """
-        previous_logs_set: Set[str] = set()
+        previous_logs_set: set[str] = set()
 
         while True:
             state = self.refresh_state()
@@ -293,9 +293,15 @@ class LivySession(LivyEndpoint):
                 else:
                     raise
 
-            current_logs: List[str] = body.get("log") or []
-            current_logs_set: Set[str] = set(current_logs)
-            logs: List[str] = list(itertools.dropwhile(lambda l: l in previous_logs_set, current_logs))
+            current_logs: list[str] = body.get("log") or []
+            current_logs_set: set[str] = set(current_logs)
+
+            # Use dropwhile to skip logs we've already seen (from the beginning)
+            # Bind previous_logs_set to avoid B023 warning
+            def not_in_previous(line: str, prev_set: set[str] = previous_logs_set) -> bool:
+                return line in prev_set
+
+            logs: list[str] = list(itertools.dropwhile(not_in_previous, current_logs))
             previous_logs_set = current_logs_set
 
             yield logs

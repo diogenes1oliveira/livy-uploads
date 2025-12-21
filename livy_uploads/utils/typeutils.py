@@ -1,4 +1,4 @@
-from typing import Any, Type, TypeVar, Union
+from typing import Any, TypeVar, Union
 
 import requests
 
@@ -18,14 +18,14 @@ def try_decode(response: requests.Response) -> Any:
             return response.content.decode("utf8", errors="replace")
 
 
-def assert_type(value: Any, expected_type: Type[T]) -> T:
+def assert_type(value: Any, expected_type: type[T]) -> T:
     """
     Type assertion utility function.
     """
     try:
-        origin = getattr(expected_type, "__origin__")
+        origin = expected_type.__origin__  # type: ignore[attr-defined]
         if origin is Union:
-            args = expected_type.__args__  # type: ignore
+            args = expected_type.__args__  # type: ignore[attr-defined]
             if len(args) == 2 and args[1] is type(None):
                 nullable = True
                 expected_type = args[0]
@@ -33,7 +33,7 @@ def assert_type(value: Any, expected_type: Type[T]) -> T:
         nullable = False
 
     if nullable and value is None:
-        return value  # type: ignore
+        return value  # type: ignore[return-value]
 
     if not isinstance(value, expected_type):
         raise ValueError(f"Expected {expected_type}, got {type(value)}")

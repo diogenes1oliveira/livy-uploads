@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import logging
 import os
 import subprocess
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Optional, Union
 
 from requests.auth import AuthBase
 
-from livy_uploads.utils import assert_type
+from livy_uploads.utils.typeutils import assert_type
 
 # mypy: disable-error-code="import-untyped"
 try:
@@ -38,7 +38,8 @@ class Authenticator:
             krb5_config=assert_type(config.get("krb5_config"), Optional[str]),  # type: ignore
             krb5_cache=assert_type(config.get("krb5_cache"), Optional[str]),  # type: ignore
             mutual_authentication=getattr(
-                MutualAuth, (assert_type(config.get("mutual_authentication"), Optional[str]) or "OPTIONAL").upper()  # type: ignore
+                MutualAuth,
+                (assert_type(config.get("mutual_authentication"), Optional[str]) or "OPTIONAL").upper(),  # type: ignore
             ),
             target_name=assert_type(config.get("target_name"), Optional[str]),  # type: ignore
             delegate=assert_type(config.get("delegate"), Optional[bool]),  # type: ignore
@@ -103,11 +104,11 @@ class KerberosAuthenticator(Authenticator):
             stdin = (self.password + "\n").encode("utf8")  # type: ignore
             subprocess.run(["kinit", "-V", self.principal], check=True, input=stdin)
 
-        kwargs = dict(
-            mutual_authentication=self.mutual_authentication.value,  # type: ignore
-            target_name=self.target_name,
-            delegate=self.delegate,
-            opportunistic_auth=self.opportunistic_auth,
-        )
+        kwargs = {
+            "mutual_authentication": self.mutual_authentication.value,  # type: ignore
+            "target_name": self.target_name,
+            "delegate": self.delegate,
+            "opportunistic_auth": self.opportunistic_auth,
+        }
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return HTTPSPNEGOAuth(**kwargs)  # type: ignore

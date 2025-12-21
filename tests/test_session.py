@@ -7,11 +7,11 @@ import pytest
 
 from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
 from livy_uploads.exceptions import LivyRequestError
-from livy_uploads.retry_policy_old import TimeoutRetryPolicy
 from livy_uploads.session import LivyEndpoint, LivySession
+from livy_uploads.utils.retry_policy import MaxTime
 
-readiness_policy = TimeoutRetryPolicy(LIVY_TEST_SESSION_READINESS_TIMEOUT, 1.0)
-stop_policy = TimeoutRetryPolicy(10.0, 1.0)
+readiness_policy = MaxTime(time=LIVY_TEST_SESSION_READINESS_TIMEOUT, pause=1.0)
+stop_policy = MaxTime(time=10.0, pause=1.0)
 
 
 @pytest.mark.slow
@@ -54,7 +54,6 @@ class TestLivySessionEndpoint:
             heartbeatTimeoutInSecond=10,
         )
         try:
-
             stopped = Event()
             do_refresh = True
             exc = None
@@ -97,7 +96,6 @@ class TestLivySessionEndpoint:
         )
         session.wait_ready(readiness_policy)
         try:
-
             logs_iter = session.follow()
             creation_logs = []
             for logs in logs_iter:

@@ -13,11 +13,11 @@ import pytest
 from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.retry_policy_old import TimeoutRetryPolicy
 from livy_uploads.session import LivyEndpoint, LivySession
+from livy_uploads.utils.retry_policy import MaxTime
 
-readiness_policy = TimeoutRetryPolicy(LIVY_TEST_SESSION_READINESS_TIMEOUT, 1.0)
-stop_policy = TimeoutRetryPolicy(10.0, 1.0)
+readiness_policy = MaxTime(time=LIVY_TEST_SESSION_READINESS_TIMEOUT, pause=1.0)
+stop_policy = MaxTime(time=10.0, pause=1.0)
 
 
 # mypy: disable-error-code="no-untyped-def"
@@ -41,9 +41,9 @@ class TestCommands:
         now = datetime.now().astimezone()
 
         code_cmd = LivyRunCode(
-            vars=dict(
-                now=now,
-            ),
+            vars={
+                "now": now,
+            },
             code="""
                 from datetime import timedelta
                 _ = now + timedelta(days=1)
@@ -98,9 +98,9 @@ class TestCommands:
         assert mock.call_count == 4
 
         test_cmd = LivyRunCode(
-            vars=dict(
-                dest_path=dest_path,
-            ),
+            vars={
+                "dest_path": dest_path,
+            },
             code="""
                 import hashlib
                 import os
@@ -135,7 +135,7 @@ class TestCommands:
 
         test_cmd = LivyRunShell(f"find {shlex.quote(dest_path)} -type f")
         pid, output, returncode = test_cmd.run(self.session)
-        lines = list(sorted(output.splitlines()))
+        lines = sorted(output.splitlines())
 
         assert returncode == 0
         assert lines[0].endswith("/foo")
@@ -143,11 +143,11 @@ class TestCommands:
         assert len(lines) == 2
 
     def test_shell_timeout(self):
-        test_cmd = LivyRunShell(f"sleep 10", run_timeout=3, stop_timeout=2)
+        test_cmd = LivyRunShell("sleep 10", run_timeout=3, stop_timeout=2)
         t0 = time.monotonic()
         _, output, returncode = test_cmd.run(self.session)
         dt = time.monotonic() - t0
-        lines = list(sorted(output.splitlines()))
+        lines = sorted(output.splitlines())
 
         assert lines == []
         assert returncode == -int(signal.SIGTERM)
