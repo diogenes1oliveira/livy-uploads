@@ -1,15 +1,18 @@
-import pytest
 from unittest.mock import Mock, patch
 
+import pytest
+
 from livy_uploads.retry_policy import DontRetryPolicy, LinearRetryPolicy, WithExceptionsPolicy
+
+# mypy: disable-error-code="no-untyped-def"
 
 
 class TestWithExceptionsLinearRetryPolicy:
     base = LinearRetryPolicy(3, 0.01)
-    policy = WithExceptionsPolicy(base, ValueError)
+    policy = WithExceptionsPolicy(base, ValueError)  # type: ignore
 
     def test_wrapping_behavior(self):
-        wrapped = WithExceptionsPolicy(self.policy, IndexError)
+        wrapped = WithExceptionsPolicy(self.policy, IndexError)  # type: ignore
         assert wrapped.base is self.policy.base
 
     def test_no_errors(self):
@@ -17,7 +20,7 @@ class TestWithExceptionsLinearRetryPolicy:
         self.policy.run(f)
         assert f.call_count == 1
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_unrecognized_error(self, patched_time_sleep: Mock):
         f = Mock()
         f.side_effect = [ValueError(), IndexError(), 42]
@@ -28,7 +31,7 @@ class TestWithExceptionsLinearRetryPolicy:
         assert f.call_count == 2
         patched_time_sleep.assert_called_once_with(0.01)
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_recognized_error(self, patched_time_sleep: Mock):
         f = Mock()
         f.side_effect = [ValueError(), ValueError(), 42]
@@ -37,7 +40,7 @@ class TestWithExceptionsLinearRetryPolicy:
         assert f.call_count == 3
         assert patched_time_sleep.call_count == 2
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_exhaustion(self, patched_time_sleep: Mock):
         f = Mock()
         f.side_effect = [ValueError()] * 3
@@ -49,7 +52,6 @@ class TestWithExceptionsLinearRetryPolicy:
         assert patched_time_sleep.call_count == 2
 
 
-
 class TestLinearRetryPolicy:
     policy = LinearRetryPolicy(2, 0.01)
 
@@ -58,7 +60,7 @@ class TestLinearRetryPolicy:
         self.policy.run(f)
         assert f.call_count == 1
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_one_error(self, patched_time_sleep: Mock):
         f = Mock()
         f.side_effect = [IndexError(), 42]
@@ -67,7 +69,7 @@ class TestLinearRetryPolicy:
         assert f.call_count == 2
         patched_time_sleep.assert_called_once_with(0.01)
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_exhaustion(self, patched_time_sleep: Mock):
         f = Mock()
         f.side_effect = [ValueError()] * 2
@@ -86,7 +88,7 @@ class TestDontRetryPolicy:
         retry_policy.run(f)
         assert f.call_count == 1
 
-    @patch('time.sleep')
+    @patch("time.sleep")
     def test_error(self, patched_time_sleep: Mock):
         retry_policy = DontRetryPolicy()
         f = Mock()

@@ -20,6 +20,9 @@ readiness_policy = TimeoutRetryPolicy(LIVY_TEST_SESSION_READINESS_TIMEOUT, 1.0)
 stop_policy = TimeoutRetryPolicy(10.0, 1.0)
 
 
+# mypy: disable-error-code="no-untyped-def"
+
+
 class TestCommands:
     endpoint = LivyEndpoint("http://localhost:8998")
     session: LivySession
@@ -131,7 +134,7 @@ class TestCommands:
         upload_cmd.run(self.session)
 
         test_cmd = LivyRunShell(f"find {shlex.quote(dest_path)} -type f")
-        output, returncode = test_cmd.run(self.session)
+        pid, output, returncode = test_cmd.run(self.session)
         lines = list(sorted(output.splitlines()))
 
         assert returncode == 0
@@ -142,7 +145,7 @@ class TestCommands:
     def test_shell_timeout(self):
         test_cmd = LivyRunShell(f"sleep 10", run_timeout=3, stop_timeout=2)
         t0 = time.monotonic()
-        output, returncode = test_cmd.run(self.session)
+        _, output, returncode = test_cmd.run(self.session)
         dt = time.monotonic() - t0
         lines = list(sorted(output.splitlines()))
 

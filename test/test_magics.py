@@ -3,6 +3,8 @@ from pathlib import Path
 import papermill
 import pytest
 
+# mypy: disable-error-code="no-untyped-def,import-untyped"
+
 
 @pytest.mark.skip(reason="needs to configure sparkmagic")
 def test_example_magics(request):

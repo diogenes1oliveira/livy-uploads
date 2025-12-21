@@ -50,6 +50,7 @@ Ask the user: "Should I keep this simple or would you like me to expand on it?"
 - **Avoid creating inline test classes** - use fixtures instead. If you need special behavior, configure the fixture's mocks with side_effect rather than creating new fixtures
 - **Don't create additional fixtures unless absolutely necessary** - prefer configuring existing fixtures with mocks, side_effects, or parameter modifications
 - **Actually run tests after writing them**: don't just say "ready for testing" - run pytest, show output, fix failures iteratively until all pass.
+- **Don't try to run all the tests at once**: this package has some very slow tests, only run the tests related to the current one.
 
 ## After Implementation
 
