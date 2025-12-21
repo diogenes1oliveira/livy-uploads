@@ -2,7 +2,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from livy_uploads.retry_policy import DontRetryPolicy, LinearRetryPolicy, WithExceptionsPolicy
+from livy_uploads.retry_policy_old import DontRetryPolicy, LinearRetryPolicy, WithExceptionsPolicy
 
 # mypy: disable-error-code="no-untyped-def"
 

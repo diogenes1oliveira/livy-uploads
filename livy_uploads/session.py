@@ -13,7 +13,7 @@ from typing_extensions import Self
 from livy_uploads.auth import Authenticator
 from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.exceptions import LivyError, LivyRequestError, LivyRetriableError
-from livy_uploads.retry_policy import RetryPolicy, WithExceptionsPolicy
+from livy_uploads.retry_policy_old import RetryPolicy, WithExceptionsPolicy
 from livy_uploads.utils import assert_type
 
 LOGGER = getLogger(__name__)

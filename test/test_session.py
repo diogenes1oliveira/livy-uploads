@@ -1,27 +1,20 @@
 import logging
-import textwrap
 import time
 from threading import Event, Thread
 from uuid import uuid4
 
 import pytest
 
-from livy_uploads.exceptions import LivyRequestError
-from livy_uploads.retry_policy import TimeoutRetryPolicy
-from livy_uploads.session import LivyEndpoint, LivySession
-
-logging.basicConfig(
-    format="%(asctime)s.%(msecs)03d %(levelname)s %(module)s:%(funcName)s: %(message)s",
-    level=logging.INFO,
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
 from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
+from livy_uploads.exceptions import LivyRequestError
+from livy_uploads.retry_policy_old import TimeoutRetryPolicy
+from livy_uploads.session import LivyEndpoint, LivySession
 
 readiness_policy = TimeoutRetryPolicy(LIVY_TEST_SESSION_READINESS_TIMEOUT, 1.0)
 stop_policy = TimeoutRetryPolicy(10.0, 1.0)
 
 
+@pytest.mark.slow
 class TestLivySessionEndpoint:
     endpoint = LivyEndpoint("http://localhost:8998")
 

@@ -7,7 +7,7 @@ import requests.exceptions
 
 from livy_uploads.auth import Authenticator
 from livy_uploads.exceptions import LivyRequestError, LivyRetriableError
-from livy_uploads.retry_policy import DontRetryPolicy, RetryPolicy, WithExceptionsPolicy
+from livy_uploads.retry_policy_old import DontRetryPolicy, RetryPolicy, WithExceptionsPolicy
 from livy_uploads.utils import assert_type, try_decode
 
 LOGGER = getLogger(__name__)

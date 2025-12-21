@@ -13,7 +13,7 @@ import pytest
 from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.retry_policy import TimeoutRetryPolicy
+from livy_uploads.retry_policy_old import TimeoutRetryPolicy
 from livy_uploads.session import LivyEndpoint, LivySession
 
 readiness_policy = TimeoutRetryPolicy(LIVY_TEST_SESSION_READINESS_TIMEOUT, 1.0)

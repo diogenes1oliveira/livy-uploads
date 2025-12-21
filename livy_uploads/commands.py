@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.retry_policy import TimeoutRetryPolicy
+from livy_uploads.retry_policy_old import TimeoutRetryPolicy
 from livy_uploads.session import LivyCommand, LivySession
 from livy_uploads.utils import assert_type
 
