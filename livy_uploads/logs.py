@@ -4,9 +4,8 @@ Utilities for configuring logging handlers and parsing log levels.
 
 import logging
 import os
-from typing import Optional, Iterable
 import sys
-from logging import Logger
+from typing import Iterable, Optional
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -107,4 +106,4 @@ def parse_log_level_name(level_name: str) -> int:
     level_name = level_name.upper()
     if not level_name.isidentifier():
         raise ValueError(f"invalid log level name: {level_name!r}")
-    return getattr(logging, level_name)
+    return getattr(logging, level_name)  # type: ignore

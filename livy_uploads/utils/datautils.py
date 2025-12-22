@@ -1,8 +1,11 @@
 import collections.abc
 import functools
-from typing import Any, Callable, Mapping, NamedTuple, Optional
+from collections.abc import Mapping
+from typing import Any, Callable, Iterable, NamedTuple, Optional, TypeVar
 
 from livy_uploads.utils.typeutils import is_list
+
+T = TypeVar("T")
 
 
 @functools.total_ordering
@@ -47,7 +50,6 @@ def delta_patch(
     target: Any,
     override: Any,
     *,
-    list_diff: Optional[Callable[[Any, Any], Optional[list[Any]]]] = None,
     _key_paths: Optional[tuple[str, ...]] = None,
 ) -> dict[str, DeltaItem]:
     """
@@ -56,8 +58,6 @@ def delta_patch(
     Args:
         target: The target dictionary.
         override: The override dictionary.
-        list_diff: A function that computes the difference between two lists. Should raise a TypeError if the lists
-            can't be compared.
 
     Returns:
         A set with the delta items.
@@ -74,14 +74,6 @@ def delta_patch(
     ... )
     >>> list(map(str, sorted(items.values())))
     ['.a.b: 1 -> 2', '.a.d: None -> 3', '.c: 2 -> 4']
-
-    >>> items = delta_patch(
-    ...     target={"indexes": [1, 2, 3]},
-    ...     override={"indexes": [2, 3, 4, 5]},
-    ...     list_diff=delta_rolling_list,
-    ... )
-    >>> list(map(str, sorted(items.values())))
-    ['.indexes: None -> [4, 5]']
     """
     key_paths: tuple[str, ...] = _key_paths or ()
     if target is None and override is None:
@@ -96,22 +88,8 @@ def delta_patch(
             changed = True
         else:
             prev = target
-            if (is_list(prev) or is_list(override)) and list_diff:
-                try:
-                    diff_items = list_diff(prev, override)
-                except TypeError:
-                    # uncompatible types, so just compare the lists as if they were primitive values
-                    changed = prev != override
-                else:
-                    if diff_items:
-                        changed = True
-                        prev = None
-                        override = diff_items
-                    else:
-                        changed = False
-            else:
-                # primitive value possibly changed
-                changed = prev != override
+            # value possibly changed
+            changed = prev != override
 
         if changed:
             item = DeltaItem(keys=key_paths, current=prev, override=override)
@@ -134,7 +112,6 @@ def delta_patch(
             field_deltas = delta_patch(
                 target=target_fields.get(k),
                 override=override_value,
-                list_diff=list_diff,
                 _key_paths=(*key_paths, k),
             )
             deltas.update(field_deltas)
@@ -149,7 +126,7 @@ def delta_patch(
         return deltas
 
 
-def delta_rolling_list(target: Any, override: Any) -> Optional[list[Any]]:
+def delta_rolling_list(target: Iterable[T], override: Iterable[T]) -> list[T]:
     """
     Computes a sliding delta patch between two lists.
 
@@ -161,22 +138,12 @@ def delta_rolling_list(target: Any, override: Any) -> Optional[list[Any]]:
     [5, 6]
     >>> delta_rolling_list([1, 2, 3, 4], [3, 5, 6])
     [3, 5, 6]
+
+    Raises:
+        TypeError: If the target and override items are not hashable.
     """
-    if override is None:
-        return None
-
-    if not is_list(override):
-        raise TypeError("override must be a list")
-
-    overrides: list[Any] = list(override)
-
-    if target is None:
-        return overrides
-
-    if not is_list(target):
-        raise TypeError("target must be a list")
-
-    targets: list[Any] = list(target)
+    targets = list(target)
+    overrides = list(override)
 
     try:
         hash(tuple(targets))
@@ -192,3 +159,105 @@ def delta_rolling_list(target: Any, override: Any) -> Optional[list[Any]]:
             return overrides[len(suffix) :]
 
     return overrides
+
+
+def deep_merge(target: Mapping[str, Any], overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Merges two dictionaries deeply, recursively combining nested mappings.
+
+    Args:
+        target: The base dictionary to merge into.
+        overrides: The dictionary containing values to override or add to the target.
+
+    Returns:
+        A new dictionary with the merged result. The target dictionary is not modified.
+
+    Merge Behavior:
+        The function processes each key-value pair in the overrides dictionary:
+
+        1. Nested Dictionaries: If both target and override values are mappings, they are
+            recursively merged.
+
+        2. Null Override: If the override value is None and the target value is a mapping,
+            the key is removed from the result (treated as a deletion).
+
+        3. Simple Override: In all other cases (primitive values, type changes, or new keys),
+            the override value replaces the target value.
+
+    Examples:
+        Simple merge with primitive values:
+
+        >>> deep_merge({"a": 1, "b": 2}, {"b": 3, "c": 4})
+        {'a': 1, 'b': 3, 'c': 4}
+
+        Nested dictionary merge:
+
+        >>> deep_merge(
+        ...     {"config": {"host": "localhost", "port": 8080}},
+        ...     {"config": {"port": 9000, "debug": True}}
+        ... )
+        {'config': {'host': 'localhost', 'port': 9000, 'debug': True}}
+
+        Deeply nested merge:
+
+        >>> deep_merge(
+        ...     {"a": {"b": {"c": 1, "d": 2}, "e": 3}},
+        ...     {"a": {"b": {"c": 10}, "f": 4}}
+        ... )
+        {'a': {'b': {'c': 10, 'd': 2}, 'e': 3, 'f': 4}}
+
+        Remove a key with None override:
+
+        >>> deep_merge(
+        ...     {"config": {"host": "localhost", "port": 8080}},
+        ...     {"config": None}
+        ... )
+        {}
+
+        >>> deep_merge(
+        ...     {"a": 1, "config": {"host": "localhost"}},
+        ...     {"config": None}
+        ... )
+        {'a': 1}
+
+        Type change (dict to primitive):
+
+        >>> deep_merge(
+        ...     {"value": {"nested": "data"}},
+        ...     {"value": "simple"}
+        ... )
+        {'value': 'simple'}
+
+        Empty dictionaries:
+
+        >>> deep_merge({}, {"a": 1})
+        {'a': 1}
+
+        >>> deep_merge({"a": 1}, {})
+        {'a': 1}
+    """
+    result = dict(target)
+
+    for key, override in overrides.items():
+        if (
+            key in target
+            and isinstance(target[key], collections.abc.Mapping)
+            and isinstance(override, collections.abc.Mapping)
+        ):
+            # recursively merge the target and override dictionaries
+            result[key] = deep_merge(result[key], override)
+        elif key in target and isinstance(target[key], collections.abc.Mapping) and override is None:
+            # a null override to a target dict implies removing the key
+            del result[key]
+        else:
+            # override the target value with the override value
+            result[key] = override
+
+    return result
+
+
+def keep_only(target: Mapping[str, Any], keys: Iterable[str]) -> dict[str, Any]:
+    """
+    Keeps only the keys in the target dictionary.
+    """
+    return {k: v for k, v in target.items() if k in keys}

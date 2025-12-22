@@ -170,12 +170,12 @@ def _request_do(
     try:
         response = session.request(method, url, **kwargs)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-        raise LivyRetriableError from e
+        raise LivyRetriableError("request failed" + str(e)) from e
 
     if response.status_code < 300:
         return response
 
     if response.status_code == 429 or response.status_code >= 500:
-        raise LivyRetriableError
+        raise LivyRetriableError("request failed with status code %d (text: %s)", response.status_code, response.text)
 
     raise LivyRequestError(response, body=try_decode(response))

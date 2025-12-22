@@ -69,7 +69,7 @@ def as_type(obj: None, t: type[T], nullable: Optional[Literal[False]] = None) ->
 def as_type(obj: None, t: type[T], nullable: Literal[True]) -> Optional[T]: ...
 def as_type(obj: Any, t: type[T], nullable: Optional[bool] = None) -> Optional[T]:
     if not is_type(obj, t, nullable):  # type: ignore
-        return None
+        raise ValueError(f"Expected {t}, got {type(obj)}")
     return obj
 
 

@@ -4,6 +4,7 @@ __all__ = (
     "NoRetry",
     "MaxTries",
     "MaxTime",
+    "CustomIntervalRetry",
     "RetriableError",
     "NotReadyError",
 )
@@ -13,7 +14,12 @@ import functools
 import logging
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable, ClassVar, Iterable, Mapping, Optional, Type, TypeVar, Union, cast
+
+from typing_extensions import Self
+
+from livy_uploads.utils.typeutils import as_type
 
 T = TypeVar("T")
 C = TypeVar("C", bound=Callable)
@@ -130,6 +136,37 @@ class RetryPolicy(ABC):
                 i += 1
                 time.sleep(next_pause)
 
+    @classmethod
+    def parse(cls, body: Any) -> Optional["RetryPolicy"]:
+        if body is None:
+            return None
+
+        kwargs = as_type(body, dict)
+        type = as_type(kwargs.get("type"), str)
+
+        if type == "no-retry":
+            return NoRetry()
+        elif type == "max-tries":
+            return MaxTries(
+                count=as_type(kwargs.get("count"), int),
+                pause=as_type(kwargs.get("pause"), float),
+            )
+        elif type == "max-time":
+            return MaxTime(time=as_type(kwargs.get("time"), float), pause=as_type(kwargs.get("pause"), float))
+        elif type == "custom-interval":
+            return CustomIntervalRetry(
+                retry_seconds_to_sleep_list=tuple(as_type(kwargs.get("retry_seconds_to_sleep_list"), list)),
+                configurable_retry_policy_max_retries=as_type(kwargs.get("configurable_retry_policy_max_retries"), int),
+            )
+        else:
+            raise ValueError(f"unknown retry policy type: {type}")
+
+    @abstractmethod
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "type": self.__configurable_typename__,  # type: ignore[attr-defined]
+        }
+
 
 class RetryPolicyWithTimeout(RetryPolicy):
     """
@@ -163,6 +200,9 @@ class NoRetry(RetryPolicy):
     def evaluate(self, i: int, dt: float) -> Optional[float]:
         return None
 
+    def as_json(self) -> dict[str, Any]:
+        return super().as_json()
+
 
 @dataclasses.dataclass(frozen=True)
 class MaxTries(RetryPolicyWithTimeout):
@@ -184,6 +224,12 @@ class MaxTries(RetryPolicyWithTimeout):
             return None
         return self.pause
 
+    def as_json(self) -> dict[str, Any]:
+        return super().as_json() | {
+            "count": self.count,
+            "pause": self.pause,
+        }
+
 
 @dataclasses.dataclass(frozen=True)
 class MaxTime(RetryPolicyWithTimeout):
@@ -204,6 +250,83 @@ class MaxTime(RetryPolicyWithTimeout):
     @property
     def timeout(self) -> float:
         return self.time
+
+    def as_json(self) -> dict[str, Any]:
+        return super().as_json() | {
+            "time": self.time,
+            "pause": self.pause,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class PeriodicRetry(RetryPolicy):
+    """
+    A retry policy that uses a fixed interval.
+    """
+
+    interval: float
+
+    def evaluate(self, i: int, dt: float) -> float:
+        return self.interval
+
+    def as_json(self) -> dict[str, Any]:
+        return super().as_json() | {
+            "interval": self.interval,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class CustomIntervalRetry(RetryPolicyWithTimeout):
+    """
+    A retry policy that uses a custom list of intervals and a maximum retry count.
+
+    This policy cycles through the provided retry intervals and stops after reaching
+    the maximum number of retries.
+    """
+
+    __configurable_typename__: ClassVar[str] = "custom-interval"
+
+    retry_seconds_to_sleep_list: tuple[float, ...]
+    configurable_retry_policy_max_retries: int
+
+    def __post_init__(self) -> None:
+        if not self.retry_seconds_to_sleep_list:
+            raise ValueError("retry_seconds_to_sleep_list must not be empty")
+        if self.configurable_retry_policy_max_retries < 1:
+            raise ValueError("configurable_retry_policy_max_retries must be at least 1")
+
+    @property
+    def timeout(self) -> float:
+        """Calculate the maximum timeout based on all intervals used."""
+        total = 0.0
+        for idx in range(self.configurable_retry_policy_max_retries):
+            interval_idx = idx % len(self.retry_seconds_to_sleep_list)
+            total += self.retry_seconds_to_sleep_list[interval_idx]
+        return total
+
+    def evaluate(self, i: int, dt: float) -> Optional[float]:
+        """
+        Evaluate whether to retry and return the sleep interval.
+
+        Args:
+            i: The current try count (1-indexed).
+            dt: The time elapsed since the first try.
+
+        Returns:
+            The sleep interval in seconds, or None if max retries exceeded.
+        """
+        if i >= self.configurable_retry_policy_max_retries:
+            return None
+
+        # Cycle through the intervals list
+        interval_idx = (i - 1) % len(self.retry_seconds_to_sleep_list)
+        return self.retry_seconds_to_sleep_list[interval_idx]
+
+    def as_json(self) -> dict[str, Any]:
+        return super().as_json() | {
+            "retry_seconds_to_sleep_list": list(self.retry_seconds_to_sleep_list),
+            "configurable_retry_policy_max_retries": self.configurable_retry_policy_max_retries,
+        }
 
 
 class RetriableError(Exception):

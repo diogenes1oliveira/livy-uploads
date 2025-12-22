@@ -32,6 +32,22 @@ class LivyStatementError(LivyError):
         return None
 
 
+class SessionGoneError(LivyError, FileNotFoundError):
+    def __init__(self, session_id: int):
+        super(FileNotFoundError, self).__init__(f"/sessions/{session_id}")
+        super(LivyError, self).__init__(f"session {session_id} is no longer running")
+
+
+class NoSuchSessionError(LivyError, FileNotFoundError):
+    def __init__(self) -> None:
+        super(FileNotFoundError, self).__init__()
+        super(LivyError, self).__init__()
+
+
+class OperationCanceledError(LivyError):
+    pass
+
+
 class LivySessionDeadError(LivyError):
     """
     Error occurred because the Livy session is dead
@@ -68,4 +84,8 @@ class LivyRetriableError(LivyError):
     Retriable error occurred during the execution of a Livy request
     """
 
+    pass
+
+
+class UnexpectedStateError(RuntimeError):
     pass

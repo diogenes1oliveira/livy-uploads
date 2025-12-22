@@ -1,4 +1,12 @@
 {
+  "http_config": {
+    "proxy": "http://localhost:8090",
+    "verify": false
+  },
+  "kerberos_config": {
+    "principal.disabled": "livy/livy.localhost@LOCALDOMAIN",
+    "krb5_cache": "./cache.secret"
+  },
   "kernel_python_credentials": {
     "username": "",
     "password": "",
@@ -59,6 +67,7 @@
   "fatal_error_suggestion": "The code failed because of a fatal error:\n\t{}.\n\nSome things to try:\na) Make sure Spark has enough available resources for Jupyter to create a Spark context.\nb) Contact your Jupyter administrator to make sure the Spark magics library is configured correctly.\nc) Restart the kernel.",
   "ignore_ssl_errors": false,
   "session_configs": {
+    "name": "livy-uploads-dev-session",
     "driverMemory": "1000M",
     "executorCores": 1,
     "executorMemory": "1000M",
@@ -70,7 +79,7 @@
     }
   },
   "session_configs_defaults": {
-    "driverMemory": "1000M",
+    "driverMemory": "500M",
     "executorCores": 1,
     "executorMemory": "1000M",
     "heartbeatTimeoutInSecond": 600,

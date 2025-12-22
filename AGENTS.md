@@ -12,6 +12,7 @@
 ## Coding Preferences
 
 - IMPORTANT: whatever you need to run some Python-based command, always prefix with `uv run`: `uv run ruff`, `uv run mypy`, etc.
+- This project uses Python 3.9: don't use syntax like str | None, stick to Optional[...], for example.
 - To check out unused imports, use ruff;
 - Format your code with black;
 - Prefer simple, direct implementations over complex class hierarchies
@@ -56,6 +57,6 @@ Ask the user: "Should I keep this simple or would you like me to expand on it?"
 
 - Run `uv run black` to format all modified files
 - Run `uv run ruff check` and fix all warnings
-- Run full test suite to verify no regressions
+- Run the related tests to verify no regressions
 - Delete any old/unused files
-- If there's a plan, write a comprehensive report in reports/ following the style of existing reports (objective, summary, files created/modified/deleted, technical details, validation, success criteria)
+- No need to create usage example scripts.

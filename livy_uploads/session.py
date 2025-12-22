@@ -87,7 +87,7 @@ class LivySession(LivyEndpoint):
         offset = 0
 
         while True:
-            LOGGER.info("fetching sessions from offset %d", offset)
+            LOGGER.debug("fetching sessions from offset %d", offset)
             r = endpoint.request("GET", f"/sessions?from={offset}&size={page_size}")
             body = dict(r.json())
             sessions = body.get("sessions") or []
