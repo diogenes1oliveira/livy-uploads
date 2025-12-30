@@ -26,8 +26,7 @@ def install_sparkmagic_uv_kernel(
     from sparkmagic import __file__ as sparkmagic_file
 
     display_name = display_name or basename
-    kernel_name = re.sub(r"[^a-zA-Z0-9]", "-", display_name).lower()
-    kernel_name = re.sub(r"-+", "-", kernel_name).strip("-")
+    kernel_name = get_kernel_name(display_name)
 
     kernel_basedir = Path(sparkmagic_file).parent / "kernels" / basename
     kernel_base_json = kernel_basedir / "kernel.json"
@@ -92,7 +91,10 @@ def patch_uv_kernel(
         "--env-file",
         str((project_root / env_filename).absolute()),
     ]
-    kernel_config["argv"] = prefix + kernel_config["argv"]
+    argv = kernel_config["argv"]
+    if Path(argv[0]).name in ("python", "python3"):
+        argv = ["python", *argv[1:]]
+    kernel_config["argv"] = prefix + argv
     kernel_config["display_name"] = display_name
     kernel_tmp_json = kernel_json.with_name(f".{kernel_json.name}.tmp")
 
@@ -100,6 +102,45 @@ def patch_uv_kernel(
     with kernel_tmp_json.open("w") as fp:
         json.dump(kernel_config, fp, indent=2)
     kernel_tmp_json.replace(kernel_json)
+
+
+class UvVenvKernelSetup(SetupPlugin):
+    def setup(self, basedir: os.PathLike, env_filename: str, env: Mapping[str, str]) -> dict[str, str]:
+        basedir = Path(basedir).absolute()
+        if not (basedir / "pyproject.toml").is_file():
+            LOGGER.warning("no pyproject.toml found in %s, skipping", basedir)
+            return {}
+
+        display_name = env.get("UV_KERNEL_NAME")
+        if not display_name:
+            LOGGER.warning("$UV_KERNEL_NAME is not set, skipping")
+            return {}
+
+        kernel_name = get_kernel_name(display_name)
+        root_mode = (env.get("UV_KERNEL_ROOTMODE") or "").lower() in ("true", "1", "yes", "y")
+
+        LOGGER.info("installing uv-prefixed kernel %r from %s", display_name, basedir)
+        args = [
+            "python",
+            "-m",
+            "ipykernel",
+            "install",
+            *(["--user"] if not root_mode else []),
+            f"--name={kernel_name}",
+            f"--display-name={display_name}",
+        ]
+        subprocess.run(args, check=True)
+
+        patch_uv_kernel(kernel_name, display_name, basedir, env_filename)
+        return {
+            "UV_KERNEL_NAME": display_name,
+            "UV_KERNEL_ROOTMODE": "true" if root_mode else "false",
+        }
+
+
+def get_kernel_name(display_name: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9]", "-", display_name).lower()
+    return re.sub(r"-+", "-", name).strip("-")
 
 
 class SparkMagicUvPysparkSetup(SetupPlugin):
@@ -113,22 +154,21 @@ class SparkMagicUvPysparkSetup(SetupPlugin):
             LOGGER.warning("no pyproject.toml found in %s, skipping", basedir)
             return {}
 
-        display_name = env.get("SPARKMAGIC_PYSPARK_KERNEL_NAME")
+        display_name = env.get("UV_KERNEL_NAME_PYSPARK")
         if not display_name:
-            LOGGER.warning("$SPARKMAGIC_PYSPARK_KERNEL_NAME is not set, skipping")
+            LOGGER.warning("$UV_KERNEL_NAME_PYSPARK is not set, skipping")
             return {}
 
-        root_mode = (env.get("SPARKMAGIC_PYSPARK_ROOT_MODE") or "").lower() in ("true", "1", "yes", "y")
-        user = not root_mode
+        root_mode = (env.get("UV_KERNEL_ROOTMODE") or "").lower() in ("true", "1", "yes", "y")
 
         install_sparkmagic_uv_kernel(
             basename="pysparkkernel",
             project_root=basedir,
             env_filename=env_filename,
             display_name=display_name,
-            user=user,
+            user=not root_mode,
         )
         return {
-            "SPARKMAGIC_PYSPARK_KERNEL_NAME": display_name,
-            "SPARKMAGIC_PYSPARK_ROOT_MODE": "false" if user else "true",
+            "UV_KERNEL_NAME_PYSPARK": display_name,
+            "UV_KERNEL_ROOTMODE": "true" if root_mode else "false",
         }
