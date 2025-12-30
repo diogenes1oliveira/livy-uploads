@@ -28,7 +28,7 @@ from urllib.parse import quote
 
 from pytest import Session
 
-from livy_uploads.client.models.session import (
+from livy_uploads.models.session import (
     SESSION_STATE_FINISHED,
     SessionDiff,
     SessionEvents,
@@ -37,7 +37,7 @@ from livy_uploads.client.models.session import (
     SessionQuery,
     SessionState,
 )
-from livy_uploads.client.models.sparkmagic import SparkMagicConfig
+from livy_uploads.models.sparkmagic import SparkMagicConfig
 from livy_uploads.endpoint import LivyEndpoint
 from livy_uploads.exceptions import (
     LivyRequestError,

@@ -10,10 +10,11 @@ from typing import Any, Optional
 from typing_extensions import Self
 
 SPARKMAGIC_CONFIG_ENVVAR = "SPARKMAGIC_CONF_DIR"
+SPARKMAGIC_PROFILES_ENVVAR = "SPARKMAGIC_CONF_PROFILES"
 
-from livy_uploads.client.models.http import HttpConfig
-from livy_uploads.client.models.kerberos import KerberosConfig
-from livy_uploads.client.models.session import SESSION_CREATE_FIELDS, SessionInfo
+from livy_uploads.models.http import HttpConfig
+from livy_uploads.models.kerberos import KerberosConfig
+from livy_uploads.models.session import SESSION_CREATE_FIELDS, SessionInfo
 from livy_uploads.utils.datautils import deep_merge, keep_only
 from livy_uploads.utils.retry_policy import CustomIntervalRetry, MaxTime, RetryPolicy
 from livy_uploads.utils.typeutils import as_type

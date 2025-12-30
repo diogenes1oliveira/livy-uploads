@@ -10,14 +10,22 @@ authors = [
 requires-python = ">=3.9"
 
 dependencies = [
+    "jinja2>=3.1.6",
     "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "requests-toolbelt>=1.0.0",
     "tabulate>=0.9.0",
+    "toml>=0.10.2",
 ]
 
 [project.scripts]
 sparkrl = "livy_uploads.client.cli:cli"
+
+[project.entry-points."livy_uploads.plugins"]
+user_ids = "livy_uploads.configs.user_ids:UserIdsSetup"
+sparkmagic_conf = "livy_uploads.configs.sparkmagic_conf:SparkMagicConfSetup"
+uv_pyspark_kernel = "livy_uploads.configs.uv_kernels:SparkMagicUvPysparkSetup"
 
 [build-system]
 requires = ["hatchling>=1.18"]
@@ -47,8 +55,10 @@ dev = [
     "time-machine>=2.19.0",
     "twine>=6.2.0",
     "types-click>=7.1.8",
+    "types-pyyaml>=6.0.12.20250915",
     "types-requests>=2.32.4.20250913",
     "types-tabulate>=0.9.0.20241207",
+    "types-toml>=0.10.8.20240310",
     "wheel>=0.45.1",
 ]
 jupyter = [

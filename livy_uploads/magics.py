@@ -24,7 +24,7 @@ from sparkmagic.livyclientlib.exceptions import (
 from sparkmagic.livyclientlib.sparkcontroller import SparkController
 from sparkmagic.utils.sparklogger import SparkLog
 
-from livy_uploads.client.models.session import SessionInfo
+from livy_uploads.models.session import SessionInfo
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
 from livy_uploads.logs import configure_logger
 from livy_uploads.paths import NBLIB_PATH_ENVVAR, find_first_in_paths, load_envfile, resolve_pathspec

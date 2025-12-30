@@ -1,6 +1,6 @@
 from livy_uploads.client.managers import SessionManager
-from livy_uploads.client.models.session import SessionInfo
-from livy_uploads.client.models.sparkmagic import SparkMagicConfig
+from livy_uploads.models.session import SessionInfo
+from livy_uploads.models.sparkmagic import SparkMagicConfig
 from livy_uploads.endpoint import LivyEndpoint
 
 

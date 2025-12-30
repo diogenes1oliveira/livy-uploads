@@ -4,15 +4,21 @@ import dataclasses
 import functools
 import json
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
 
 import click
+from typing_extensions import Self
 
 from livy_uploads.client.managers import StreamSessionEventsCallback
-from livy_uploads.client.models.session import SessionKind, SessionQuery, SessionState
 from livy_uploads.client.sparkmagic import SPARKMAGIC_CONFIG_ENVVAR, SparkMagic
+from livy_uploads.configs.setup import save_config as setup_save_config
 from livy_uploads.logs import configure_logger
+from livy_uploads.models.session import SessionKind, SessionQuery, SessionState
+from livy_uploads.models.sparkmagic import SPARKMAGIC_PROFILES_ENVVAR
+from livy_uploads.paths import load_envfile
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,10 +28,15 @@ F = TypeVar("F", bound=Callable[..., Any])
 @dataclasses.dataclass()
 class CliContext:
     conf_dir: Optional[str] = None
+    profiles: Optional[tuple[str, ...]] = None
 
     @functools.cached_property
     def sparkmagic(self) -> SparkMagic:
-        return SparkMagic.setup(self.conf_dir)
+        return SparkMagic.setup(self.conf_dir, self.profiles)
+
+    def setup(self) -> Self:
+        self.sparkmagic
+        return self
 
 
 def _query_singlefilter(f: F) -> F:
@@ -56,14 +67,17 @@ def _query_multifilter(f: F) -> F:
     "--conf-dir",
     type=str,
     help="Directory to store configuration files",
-    envvar=SPARKMAGIC_CONFIG_ENVVAR,
 )
+@click.option("--profile", type=str, multiple=True, help="Profiles to use")
 @click.pass_context
-def cli(ctx: click.Context, conf_dir: Optional[str]) -> None:
+def cli(ctx: click.Context, conf_dir: Optional[str], profile: tuple[str, ...]) -> None:
     """sparkrl: Spark Remote Layer"""
     configure_logger()
+    load_envfile()
+
     cli_ctx: CliContext = ctx.ensure_object(CliContext)
-    cli_ctx.conf_dir = conf_dir
+    cli_ctx.conf_dir = conf_dir or None
+    cli_ctx.profiles = profile or None
 
 
 @cli.command()
@@ -79,6 +93,29 @@ def config(ctx: CliContext, as_post_json: bool) -> None:
         data = ctx.sparkmagic.config.as_json()
 
     click.echo(json.dumps(data, indent=2))
+
+
+@cli.command()
+@click.option("--env-filename", type=str, help="Environment filename override")
+@click.option("--quote", is_flag=True, default=False, help="Quote the values")
+@click.pass_obj
+def save_config(ctx: CliContext, env_filename: Optional[str], quote: bool = False) -> None:
+    """Resolves and saves the configuration to an environment file."""
+    setup_save_config(env_filename=env_filename, quote=quote)
+
+
+@cli.command(context_settings=dict(ignore_unknown_options=True, help_option_names=[]))
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_obj
+def run(ctx: CliContext, args: tuple[str, ...]) -> None:
+    """Runs an arbitrary command in a properly configured shell environment."""
+
+    if not args:
+        raise click.BadArgumentUsage("no command provided")
+
+    ctx.setup()
+    LOGGER.info("running command %r in pid=%d", args[0], os.getpid())
+    os.execvp(args[0], args)
 
 
 @cli.command()

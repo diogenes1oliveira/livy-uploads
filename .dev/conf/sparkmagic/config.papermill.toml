@@ -1,0 +1,13 @@
+# {
+#     "shutdown_session_on_spark_statement_errors": true,
+#     "all_errors_are_fatal": true,
+#     "session_configs": {
+#         "name": "livy-uploads-papermill-session"
+#     }
+# }
+
+shutdown_session_on_spark_statement_errors = true
+all_errors_are_fatal = true
+
+[session_configs]
+name = "livy-uploads-papermill-session"
