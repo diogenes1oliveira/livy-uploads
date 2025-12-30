@@ -34,7 +34,7 @@ def save_config(env_filename: Optional[str] = None, quote: bool = False, appname
 
     for i, plugin_cls in enumerate(plugin_cls_list):
         LOGGER.info("loading plugin %s (%d/%d)", plugin_cls.__name__, i + 1, len(plugin_cls_list))
-        plugin = plugin_cls()  # type: ignore
+        plugin = plugin_cls()
 
         plugin_overrides = plugin.setup(basedir, env_filename, envs)
         LOGGER.info(
@@ -55,7 +55,7 @@ def save_config(env_filename: Optional[str] = None, quote: bool = False, appname
     os.environ.update(overrides)
 
 
-def load_configs(env: Mapping[str, str], *paths: os.PathLike) -> dict[str, Any]:
+def load_configs(env: Mapping[str, str], basedir: Path, *paths: os.PathLike) -> dict[str, Any]:
     """
     Loads configuration files from the given paths and returns a dictionary of the loaded configurations.
 
@@ -78,7 +78,7 @@ def load_configs(env: Mapping[str, str], *paths: os.PathLike) -> dict[str, Any]:
         with ExitStack() as stack:
             try:
                 if ".j2" in path.name:
-                    fp = jinja_renderer.render(path.read_text(), env=env)
+                    fp = jinja_renderer.render(path.read_text(), env=env, basedir=basedir)
                     suffix = path.with_name(path.name.replace(".j2", "")).suffix
                     stack.enter_context(fp)
                 else:

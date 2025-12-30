@@ -38,7 +38,7 @@ class SparkMagicConfSetup(SetupPlugin):
     def load_config(self) -> dict[str, Any]:
         files = self.config_input_files
         LOGGER.info("loading SparkMagic configuration from %d files: %s", len(files), list(map(str, files)))
-        return load_configs(self.env, *files)
+        return load_configs(self.env, self.basedir, *files)
 
     @property
     def config_dir(self) -> Optional[Path]:

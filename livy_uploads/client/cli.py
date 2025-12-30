@@ -13,11 +13,10 @@ import click
 from typing_extensions import Self
 
 from livy_uploads.client.managers import StreamSessionEventsCallback
-from livy_uploads.client.sparkmagic import SPARKMAGIC_CONFIG_ENVVAR, SparkMagic
+from livy_uploads.client.sparkmagic import SparkMagic
 from livy_uploads.configs.setup import save_config as setup_save_config
 from livy_uploads.logs import configure_logger
 from livy_uploads.models.session import SessionKind, SessionQuery, SessionState
-from livy_uploads.models.sparkmagic import SPARKMAGIC_PROFILES_ENVVAR
 from livy_uploads.paths import load_envfile
 
 LOGGER = logging.getLogger(__name__)
@@ -27,12 +26,11 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 @dataclasses.dataclass()
 class CliContext:
-    conf_dir: Optional[str] = None
-    profiles: Optional[tuple[str, ...]] = None
+    basedir: Path = Path.cwd()
 
     @functools.cached_property
     def sparkmagic(self) -> SparkMagic:
-        return SparkMagic.setup(self.conf_dir, self.profiles)
+        return SparkMagic.setup(basedir=self.basedir)
 
     def setup(self) -> Self:
         self.sparkmagic
@@ -63,21 +61,14 @@ def _query_multifilter(f: F) -> F:
 
 
 @click.group()
-@click.option(
-    "--conf-dir",
-    type=str,
-    help="Directory to store configuration files",
-)
-@click.option("--profile", type=str, multiple=True, help="Profiles to use")
 @click.pass_context
-def cli(ctx: click.Context, conf_dir: Optional[str], profile: tuple[str, ...]) -> None:
+def cli(ctx: click.Context) -> None:
     """sparkrl: Spark Remote Layer"""
     configure_logger()
-    load_envfile()
-
     cli_ctx: CliContext = ctx.ensure_object(CliContext)
-    cli_ctx.conf_dir = conf_dir or None
-    cli_ctx.profiles = profile or None
+
+    if env_path := load_envfile():
+        cli_ctx.basedir = env_path.parent
 
 
 @cli.command()

@@ -88,6 +88,7 @@ def patch_uv_kernel(
         "--project",
         str(project_root.absolute()),
         "run",
+        "--all-groups",
         "--env-file",
         str((project_root / env_filename).absolute()),
     ]

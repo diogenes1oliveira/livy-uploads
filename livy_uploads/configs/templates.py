@@ -1,5 +1,6 @@
 import functools
 import io
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
@@ -15,7 +16,7 @@ class JinjaRenderer:
 
         return Environment(undefined=StrictUndefined)
 
-    def render(self, template_content: str, env: Mapping[str, str]) -> io.StringIO:
+    def render(self, template_content: str, basedir: Path, env: Mapping[str, str]) -> io.StringIO:
         template = self.jinja_env.from_string(template_content)
-        result = template.render(env=env)
+        result = template.render(env=env, basedir=basedir)
         return io.StringIO(result)
