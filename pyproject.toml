@@ -25,8 +25,6 @@ sparkrl = "livy_uploads.client.cli:cli"
 [project.entry-points."livy_uploads.plugins"]
 user_ids = "livy_uploads.configs.user_ids:UserIdsSetup"
 sparkmagic_conf = "livy_uploads.configs.sparkmagic_conf:SparkMagicConfSetup"
-uv_pyspark_kernel = "livy_uploads.configs.uv_kernels:SparkMagicUvPysparkSetup"
-uv_kernel = "livy_uploads.configs.uv_kernels:UvVenvKernelSetup"
 
 [build-system]
 requires = ["hatchling>=1.18"]

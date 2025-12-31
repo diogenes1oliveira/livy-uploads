@@ -160,37 +160,6 @@ services:
     ports:
       - "8090:8888"
 
-  jupyter:
-    networks:
-      localhost:
-        aliases:
-          - jupyter.localhost
-    build:
-      context: .
-      dockerfile: ./Dockerfile.jupyter
-      args:
-        - USER_NAME=${USER_NAME:-app}
-        - USER_UID=${USER_UID?error}
-        - USER_GID=${USER_GID?error}
-    mem_limit: 1g
-    cpus: 1
-    ports:
-      - "8888:8888"
-    user: "${USER_NAME:-app}"
-    environment:
-      - SPARKMAGIC_CONF_DIR=/app/.dev/conf/sparkmagic/
-      - SERVICE_PRECONDITION=livy.localhost:8998
-    command:
-      - bash
-      - -c
-      - |
-        set -eux
-        pip install -e .
-        exec jupyter lab --no-browser --allow-root --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token= --NotebookApp.password= --FileContentsManager.allow_hidden=True
-    working_dir: /app
-    volumes:
-      - ./:/app
-
 networks:
   localhost:
 

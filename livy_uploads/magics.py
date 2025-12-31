@@ -24,9 +24,9 @@ from sparkmagic.livyclientlib.exceptions import (
 from sparkmagic.livyclientlib.sparkcontroller import SparkController
 from sparkmagic.utils.sparklogger import SparkLog
 
-from livy_uploads.models.session import SessionInfo
 from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
 from livy_uploads.logs import configure_logger
+from livy_uploads.models.session import SessionInfo
 from livy_uploads.paths import NBLIB_PATH_ENVVAR, find_first_in_paths, load_envfile, resolve_pathspec
 from livy_uploads.session import LivyCommand, LivySession
 
@@ -410,11 +410,15 @@ class LivyUploaderMagics(Magics):
         default=False,
         help="Do not refresh the session information",
     )
+    @needs_local_scope
     @line_magic
     def session_info(self, line: str, cell: str = "", local_ns: Optional[Any] = None) -> None:
         """
         Prints the session information
         """
+        if local_ns is None:
+            raise UsageError("local_ns is required")
+
         if not (ipython := get_ipython()):
             raise UsageError("no IPython shell found")
 
@@ -438,6 +442,7 @@ class LivyUploaderMagics(Magics):
             sys.stderr.flush()
             # raise
         else:
+            local_ns["session_info"] = session_info
             sys.stdout.write(json.dumps(session_info.as_json(), indent=2))
             sys.stdout.flush()
 

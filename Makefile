@@ -26,3 +26,7 @@ dev/rm:
 	docker compose down --remove-orphans --volumes
 	docker network prune -f
 	docker volume prune -f
+
+.PHONY: dev/jupyter
+dev/jupyter:
+	uv run --all-groups --env-file .env jupyter lab --no-browser --allow-root --no-browser --port=8888 --NotebookApp.token= --NotebookApp.password= --FileContentsManager.allow_hidden=True
