@@ -3,6 +3,8 @@ from typing import Any, List, Optional
 
 from requests import Response
 
+from livy_uploads.models.session import SessionQuery
+
 
 class LivyError(Exception):
     """
@@ -38,10 +40,10 @@ class SessionGoneError(LivyError, FileNotFoundError):
         super(LivyError, self).__init__(f"session {session_id} is no longer running")
 
 
-class NoSuchSessionError(LivyError, FileNotFoundError):
-    def __init__(self) -> None:
-        super(FileNotFoundError, self).__init__()
-        super(LivyError, self).__init__()
+class NoSuchSessionError(LivyError):
+    def __init__(self, query: SessionQuery) -> None:
+        super().__init__(f"no session found matching the query: {query.as_dict()}")
+        self.query = query
 
 
 class OperationCanceledError(LivyError):

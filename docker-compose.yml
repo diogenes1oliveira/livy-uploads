@@ -85,40 +85,6 @@ services:
       <<: *hadoop-env
       SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864"
 
-  historyserver:
-    image: diogenes1oliveira/hadoop-historyserver:latest-hadoop3.3.2-java8
-    container_name: historyserver
-    hostname: historyserver.localhost
-    networks:
-      - localhost
-    ports:
-      - 8188:8188
-    environment:
-      <<: *hadoop-env
-      SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864 resourcemanager.localhost:8088"
-    volumes:
-      - hadoop_historyserver:/hadoop/yarn/timeline
-
-  livy:
-    image: hadoop-nodemanager-livy
-    build:
-      dockerfile: ./Dockerfile.livy
-      args:
-        - HADOOP_VERSION=${HADOOP_VERSION:-3.3.2}
-    container_name: livy
-    hostname: livy.localhost
-    networks:
-      - localhost
-    ports:
-      - 8998:8998
-    command: /opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/bin/livy-server
-    environment:
-      <<: *hadoop-env
-      SERVICE_PRECONDITION: "historyserver.localhost:8188"
-    volumes:
-      - .dev/conf/livy:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/conf
-      - .dev/conf/spark:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/spark/conf
-
   nodemanager1:
     image: hadoop-nodemanager-livy
     build:
@@ -148,6 +114,61 @@ services:
       <<: *hadoop-env
       YARN_CONF_yarn_nodemanager_webapp_address: "0.0.0.0:8042"
       SERVICE_PRECONDITION: "namenode.localhost:9002 namenode.localhost:9870 datanode.localhost:9864 resourcemanager.localhost:8088"
+
+  historyserver:
+    image: diogenes1oliveira/hadoop-historyserver:latest-hadoop3.3.2-java8
+    container_name: historyserver
+    hostname: historyserver.localhost
+    networks:
+      - localhost
+    ports:
+      - 8188:8188
+    environment:
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: >-
+        namenode.localhost:9002
+        namenode.localhost:9870
+        datanode.localhost:9864
+        resourcemanager.localhost:8088
+        nodemanager1.localhost:8041
+        nodemanager2.localhost:8042
+    volumes:
+      - hadoop_historyserver:/hadoop/yarn/timeline
+    healthcheck:
+      test: ["CMD-SHELL", "nc -w1 -vz localhost 8188 || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+      start_period: 20s
+
+  livy:
+    image: hadoop-nodemanager-livy
+    build:
+      dockerfile: ./Dockerfile.livy
+      args:
+        - HADOOP_VERSION=${HADOOP_VERSION:-3.3.2}
+    container_name: livy
+    hostname: livy.localhost
+    networks:
+      - localhost
+    ports:
+      - 8998:8998
+    command: /opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/bin/livy-server
+    environment:
+      <<: *hadoop-env
+      SERVICE_PRECONDITION: "historyserver.localhost:8188"
+    volumes:
+      - .dev/conf/livy:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/livy/conf
+      - .dev/conf/spark:/opt/hadoop-${HADOOP_VERSION:-3.3.2}/etc/spark/conf
+    depends_on:
+      historyserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -w1 -vz localhost 8998 || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 2
+      start_period: 10s
 
   proxy:
     networks:

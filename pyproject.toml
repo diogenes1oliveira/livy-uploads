@@ -10,6 +10,10 @@ authors = [
 requires-python = ">=3.9"
 
 dependencies = [
+    "attrs>=25.4.0",
+    "beautifulsoup4>=4.14.3",
+    "cattrs>=25.3.0",
+    "docstring-parser>=0.17.0",
     "jinja2>=3.1.6",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
@@ -20,11 +24,17 @@ dependencies = [
 ]
 
 [project.scripts]
-sparkrl = "livy_uploads.client.cli:cli"
+sparkrl = "livy_uploads.cli.__main__:cli"
 
 [project.entry-points."livy_uploads.plugins"]
 user_ids = "livy_uploads.configs.user_ids:UserIdsSetup"
 sparkmagic_conf = "livy_uploads.configs.sparkmagic_conf:SparkMagicConfSetup"
+
+[project.entry-points."livy_uploads.plugins.commands"]
+session_info = "livy_uploads.commands.infos:SessionInfoCommand"
+
+[project.entry-points."livy_uploads.plugins.patches"]
+sparkmagic_reload = "livy_uploads.patches.sparkmagic:SparkMagicReloadPatch"
 
 [build-system]
 requires = ["hatchling>=1.18"]

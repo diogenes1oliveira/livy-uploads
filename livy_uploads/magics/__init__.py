@@ -1,0 +1,1 @@
+from livy_uploads.magics.register import load_ipython_extension

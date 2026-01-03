@@ -6,67 +6,55 @@ import json
 import logging
 import sys
 import threading
-from concurrent.futures import CancelledError
-from contextlib import ExitStack
 from datetime import datetime
-from typing import (
-    Any,
-    BinaryIO,
-    Callable,
-    Iterator,
-    List,
-    Literal,
-    Optional,
-    Protocol,
-    TextIO,
-    Type,
-    TypeVar,
-    Union,
-    overload,
-)
+from typing import Any, Iterator, List, Optional, Protocol, TextIO
 from urllib.parse import quote
 
-from pytest import Session
-
+from livy_uploads.endpoint import LivyEndpoint
+from livy_uploads.exceptions import LivyRequestError, OperationCanceledError, SessionGoneError, UnexpectedStateError
 from livy_uploads.models.session import (
+    SESSION_CREATE_FIELDS,
     SESSION_STATE_FINISHED,
-    SessionDiff,
+    LivyClientConfig,
     SessionEvents,
     SessionInfo,
     SessionLog,
     SessionQuery,
     SessionState,
 )
-from livy_uploads.models.sparkmagic import SparkMagicConfig
-from livy_uploads.endpoint import LivyEndpoint
-from livy_uploads.exceptions import (
-    LivyRequestError,
-    LivySessionDeadError,
-    OperationCanceledError,
-    SessionGoneError,
-    UnexpectedStateError,
-)
-from livy_uploads.session import LivySession
 from livy_uploads.utils.datautils import delta_rolling_list
-from livy_uploads.utils.retry_policy import RetryPolicy
+from livy_uploads.utils.retry_policy import MaxTime, RetryPolicy
 from livy_uploads.utils.typeutils import as_type
-
-S = TypeVar("S", SessionInfo, LivySession)
 
 LOGGER = logging.getLogger(__name__)
 
 
 class SessionManager:
-    def __init__(self, endpoint: LivyEndpoint, config: SparkMagicConfig) -> None:
+    def __init__(
+        self,
+        endpoint: LivyEndpoint,
+        livy_client_config: Optional[LivyClientConfig] = None,
+        create_config: Optional[SessionInfo] = None,
+        readiness_policy: Optional[RetryPolicy] = None,
+        delete_policy: Optional[RetryPolicy] = None,
+    ) -> None:
         self.endpoint = endpoint
-        self.config = config
+        self.livy_client_config = livy_client_config or LivyClientConfig()
+        self.create_config = create_config
+        self.delete_policy = delete_policy or MaxTime(time=15.0, pause=1.5)
+        self.readiness_policy = readiness_policy or MaxTime(time=60.0, pause=2.0)
         self._log_offsets: dict[int, int] = {}
         self._log_lines: dict[int, list[str]] = {}
         self._created_at: dict[int, datetime] = {}
 
+    @property
+    def default_session_name(self) -> Optional[str]:
+        if self.create_config is None:
+            return None
+        return self.create_config.name or None
+
     def find(self, query: SessionQuery, refresh: bool = False, keep_logs: bool = False) -> Iterator[SessionInfo]:
         offset = 0
-        page_size = self.config.http_config.page_size
 
         if query.id is not None and refresh:
             info = self.get(query.id, keep_logs=keep_logs)
@@ -76,7 +64,7 @@ class SessionManager:
 
         while True:
             LOGGER.debug("fetching sessions from offset %d", offset)
-            r = self.endpoint.request("GET", f"/sessions?from={offset}&size={page_size}")
+            r = self.endpoint.request("GET", f"/sessions?from={offset}&size={self.livy_client_config.page_size}")
             body = as_type(r.json(), dict)
             raw_sessions = as_type(body.get("sessions"), list, nullable=True) or []
             offset += len(raw_sessions)
@@ -92,18 +80,20 @@ class SessionManager:
                 else:
                     yield self.refresh(info, keep_logs=keep_logs)
 
-            if not raw_sessions or len(raw_sessions) < page_size:
+            if not raw_sessions or len(raw_sessions) < self.livy_client_config.page_size:
                 break
 
     def find_all(self, query: SessionQuery, refresh: bool = False, keep_logs: bool = False) -> List[SessionInfo]:
-        max_results = self.config.http_config.max_results
-        return list(itertools.islice(self.find(query, refresh=refresh, keep_logs=keep_logs), max_results))
+        return list(
+            itertools.islice(
+                self.find(query, refresh=refresh, keep_logs=keep_logs),
+                self.livy_client_config.max_results,
+            )
+        )
 
     def find_one(self, query: SessionQuery, refresh: bool = False, keep_logs: bool = False) -> Optional[SessionInfo]:
-        if not (query.id is not None or query.name is not None or query.appId is not None):
-            if not (name := self.config.as_session_info().name):
-                raise ValueError("no identifier provided in query or in configuration")
-            query = dataclasses.replace(query, name=name)
+        if not query.has_identifier():
+            raise ValueError("no identifier provided in query")
 
         infos = self.find_all(query, refresh=refresh, keep_logs=keep_logs)
         if not infos:
@@ -145,7 +135,14 @@ class SessionManager:
             else:
                 raise
 
-    def create(self, name: Optional[str] = None, recreate: Optional[bool] = None) -> SessionInfo:
+    def create(
+        self, name: Optional[str] = None, recreate: Optional[bool] = None, wait: Optional[bool] = None
+    ) -> SessionInfo:
+        if self.create_config is None:
+            raise RuntimeError("create_config is not set")
+        if not name and not (name := self.default_session_name):
+            raise ValueError("name is required")
+
         info = self.find_one(SessionQuery(name=name))
         if info is not None:
             if not recreate:
@@ -153,13 +150,16 @@ class SessionManager:
                 return info
             else:
                 self.delete(info.id)
-                self.wait(SessionQuery(id=info.id), SessionState.GONE, retry_policy=self.config.finish_policy)
+                self.wait(SessionQuery(id=info.id), SessionState.GONE, retry_policy=self.delete_policy)
 
-        body = self.config.as_session_post_json()
-        if not name and not (name := self.config.as_session_info().name):
-            raise ValueError("no name provided in configuration")
+        create_json = self.create_config.as_json(include_nulls=False)
+        body = {}
+        for k, v in create_json.items():
+            if k in SESSION_CREATE_FIELDS:
+                body[k] = v
 
         body["name"] = name
+
         path = "/sessions"
         doAs = body.pop("doAs", None)
         if doAs:
@@ -170,7 +170,11 @@ class SessionManager:
         r = self.endpoint.request("POST", path=path, json=body)
         info = self._parse(r.json()).trim(keep_logs=False)
         LOGGER.info("session name=%r created with id=%d", name, info.id)
-        return info
+
+        if wait:
+            self.wait(SessionQuery(id=info.id), SessionState.IDLE, retry_policy=self.readiness_policy)
+
+        return self.refresh(info)
 
     def logs(self, id: int, offset: Optional[int] = None, info: Optional[SessionInfo] = None) -> list[SessionLog]:
         if info is not None and info.id != id:
@@ -184,7 +188,7 @@ class SessionManager:
             name = info.name
 
         offset = offset if offset is not None else self._log_offsets.get(id, 0)
-        batch_size = self.config.http_config.log_batch_size
+        batch_size = self.livy_client_config.log_batch_size
 
         try:
             # a circular queue for some reason...
@@ -239,7 +243,7 @@ class SessionManager:
 
         self._uncache(id)
 
-    def delete_all(self, query: SessionQuery) -> None:
+    def delete_all(self, query: SessionQuery, wait: bool = False) -> None:
         infos = self.find_all(query)
         if not infos:
             return
@@ -247,6 +251,9 @@ class SessionManager:
         LOGGER.info("deleting %d sessions: %s", len(ids), ids)
         for info in self.find_all(query):
             self.delete(info.id)
+
+        if wait:
+            self.wait(query, SessionState.GONE, retry_policy=self.delete_policy)
 
     def watch(self, query: SessionQuery, include_logs: bool = False, refresh: bool = False) -> Iterator[SessionEvents]:
         def _get_infos() -> dict[int, SessionInfo]:
@@ -348,7 +355,7 @@ class SessionManager:
         stop_event: Optional[threading.Event] = None,
     ) -> None:
         callback = callback if callback is not None else StreamSessionEventsCallback()
-        pause = self.config.http_config.poll_pause
+        pause = self.livy_client_config.poll_pause
         stop_event = stop_event or threading.Event()
 
         try:

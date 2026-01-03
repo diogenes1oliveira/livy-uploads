@@ -9,7 +9,6 @@ from typing import Iterable, Optional
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
-LOG_LEVEL_NAME = (os.getenv("LOG_LEVEL") or "INFO").upper()
 
 
 class FlushStreamHandler(logging.Handler):
@@ -51,9 +50,10 @@ def configure_logger(
         :func:`parse_log_level_name` for log level name parsing.
     """
     if recreate_names == ():
-        recreate_names = ["livy_uploads.", "sparkmagic."]
+        this_name = __name__.partition(".")[0]
+        recreate_names = [this_name + ".", "sparkmagic."]
 
-    level = parse_log_level_name(level_name or LOG_LEVEL_NAME)
+    level = parse_log_level_name(level_name or (os.getenv("LOG_LEVEL") or "INFO").upper())
     handler = handler or logging.StreamHandler()
     formatter = logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATEFMT)
     handler.setFormatter(formatter)

@@ -269,3 +269,15 @@ def load_envfile(
         LOGGER.log(log_level, "no environment variables to set from %s", path)
 
     return Path(path)
+
+
+def find_project_root(start: Optional[Path] = None) -> Path:
+    start = (start or Path.cwd()).absolute()
+
+    for path in [start, *start.parents]:
+        for filename in ("sparkrl.toml", "pyproject.toml", ".env.example", "README.md"):
+            candidate = start / filename
+            if candidate.exists():
+                return candidate.parent
+
+    return start

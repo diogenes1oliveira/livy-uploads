@@ -13,15 +13,25 @@ import json
 from datetime import datetime
 from enum import Enum
 from fnmatch import fnmatch
-from typing import Any, Callable, Iterable, NamedTuple, Optional, TypeVar, Union
+from typing import Any, Callable, Iterable, NamedTuple, Optional, TypeVar
 
 from typing_extensions import Self
 
-from livy_uploads.utils.datautils import DeltaItem, delta_patch, delta_rolling_list
+from livy_uploads.utils.datautils import DeltaItem, delta_patch
 from livy_uploads.utils.typeutils import as_type
 
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+@dataclasses.dataclass(frozen=True)
+class LivyClientConfig:
+    url: str = "http://localhost:8998"
+    page_size: int = 20
+    max_results: int = 1001
+    log_batch_size: int = 100
+    poll_pause: float = 2.0
+    default_headers: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +68,9 @@ class SessionQuery:
 
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in dataclasses.asdict(self).items() if v is not None}
+
+    def has_identifier(self) -> bool:
+        return self.id is not None or self.name is not None or self.appId is not None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -156,7 +169,7 @@ class SessionInfo:
 
         try:
             return cls(
-                id=as_type(body["id"], int),
+                id=as_type(body.get("id"), int, nullable=True) or 0,
                 appId=as_type(body.get("appId"), str, nullable=True),
                 state=SessionState.parse_optional(body.get("state")),
                 kind=SessionKind.parse_optional(body.get("kind")),
@@ -227,25 +240,33 @@ class SessionInfo:
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
-    def as_json(self, compact: bool = False) -> dict[str, Any]:
+    def as_attrs(self) -> str:
+        return " ".join(f"{k}={v}" for k, v in self.as_json(compact=True).items())
+
+    def as_json(self, compact: bool = False, include_nulls: bool = True) -> dict[str, Any]:
         """Convert SessionConfig to a JSON-serializable dictionary."""
-        result = {}
 
         if compact:
-            return {
+            result = {
                 "id": self.id,
                 "name": self.name,
                 "appId": self.appId,
                 "state": self.state.as_json() if self.state else None,
             }
+        else:
+            result = {}
 
-        for field in dataclasses.fields(self):
-            value = getattr(self, field.name)
-            if hasattr(value, "as_json"):
-                value = value.as_json()
-            elif isinstance(value, datetime):
-                value = value.isoformat(timespec="seconds")
-            result[field.name] = value
+            for field in dataclasses.fields(self):
+                value = getattr(self, field.name)
+                if hasattr(value, "as_json"):
+                    value = value.as_json()
+                elif isinstance(value, datetime):
+                    value = value.isoformat(timespec="seconds")
+                result[field.name] = value
+
+        if not include_nulls:
+            result = {k: v for k, v in result.items() if v is not None}
+
         return result
 
     def to_json(self, compact: bool = False) -> str:

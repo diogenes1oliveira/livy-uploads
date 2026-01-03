@@ -1,3 +1,4 @@
+import base64
 import collections.abc
 import functools
 from collections.abc import Mapping
@@ -261,3 +262,44 @@ def keep_only(target: Mapping[str, Any], keys: Iterable[str]) -> dict[str, Any]:
     Keeps only the keys in the target dictionary.
     """
     return {k: v for k, v in target.items() if k in keys}
+
+
+def jsonify(obj: Any) -> Any:
+    if obj is None:
+        return None
+    elif hasattr(obj, "as_json"):
+        return jsonify(obj.as_json())
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    elif isinstance(obj, (bytes, bytearray)):
+        return base64.b64encode(obj).decode("ascii")
+    elif isinstance(obj, collections.abc.Sequence):
+        return [jsonify(item) for item in obj]
+    elif isinstance(obj, collections.abc.Mapping):
+        return {jsonify(k): jsonify(v) for k, v in obj.items()}
+    else:
+        raise RuntimeError(f"Cannot serialize {type(obj)} to JSON")
+
+
+def get_nested_key(obj: Any, key: str) -> Any:
+    parts = (key or ".").removeprefix(".").split(".")
+    curr = obj
+
+    for i, k in enumerate(parts):
+        if not isinstance(curr, collections.abc.Mapping):
+            path = "." + ".".join(parts[: i + 1])
+            raise TypeError(f"expected a dictionary at .{path}, got {type(curr)} instead")
+        try:
+            curr = curr[k]
+        except KeyError:
+            path = "." + ".".join(parts[: i + 1])
+            raise KeyError(f"key {k} not found at {path}") from None
+
+    return curr
+
+
+def is_module_name(s: str) -> bool:
+    """
+    Checks if a string is a valid module name.
+    """
+    return False if not s else all(part.isidentifier() for part in s.split("."))

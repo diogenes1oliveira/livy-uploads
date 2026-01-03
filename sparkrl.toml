@@ -1,0 +1,117 @@
+
+[uv.kernel]
+name = "Sparkrl+uv"
+pyspark_name = "Sparkrl+uv (Pyspark)"
+
+[http_config]
+proxy = "http://localhost:8090"
+verify = false
+
+[livy_client]
+url = "http://livy.localhost:8998"
+page_size = 20
+max_results = 1001
+log_batch_size = 100
+poll_pause = 2.0
+default_headers = { "Content-Type" = "application/json" }
+
+[livy_client.auth]
+# type = "kerberos"
+
+[retry_policy]
+type = "custom-interval"
+retry_seconds_to_sleep_list = [0.2, 0.5, 1.0, 3.0, 5.0]
+configurable_retry_policy_max_retries = 8
+
+[delete_policy]
+type = "max-time"
+time = 15.0
+pause = 1.5
+
+[readiness_policy]
+type = "max-time"
+time = 60.0
+pause = 2.0
+
+[session_configs]
+name = "livy-uploads-dev-session"
+driverMemory = "1000M"
+executorCores = 1
+executorMemory = "1000M"
+heartbeatTimeoutInSecond = 600
+ttl = "10m"
+
+[session_configs.conf]
+"spark.ui.enabled" = "true"
+"spark.hadoop.custom.property" = "custom.property.value"
+
+[sparkmagic]
+wait_for_idle_timeout_seconds = 15
+livy_session_startup_timeout_seconds = 180
+ignore_ssl_errors = false
+use_auto_viz = true
+coerce_dataframe = true
+max_results_sql = 2_500
+pyspark_dataframe_encoding = "utf-8"
+heartbeat_refresh_seconds = 30
+livy_server_heartbeat_timeout_seconds = 0
+heartbeat_retry_seconds = 10
+server_extension_default_kernel_name = "pysparkkernel"
+custom_headers = {}
+retry_policy = "configurable"
+retry_seconds_to_sleep_list = [0.2, 0.5, 1.0, 3.0, 5.0]
+configurable_retry_policy_max_retries = 8
+shutdown_session_on_spark_statement_errors = true
+all_errors_are_fatal = false
+cleanup_all_sessions_on_exit = false
+fatal_error_suggestion = """
+The code failed because of a fatal error:
+\t{}.
+
+Some things to try:
+a) Make sure Spark has enough available resources for Jupyter to create a Spark context.
+b) Contact your Jupyter administrator to make sure the Spark magics library is configured correctly.
+c) Restart the kernel."""
+
+[sparkmagic.kernel_python_credentials]
+username = ""
+password = ""
+url = "http://livy.localhost:8998"
+auth = "None"
+
+[sparkmagic.kernel_scala_credentials]
+username = ""
+password = ""
+url = "http://livy.localhost:8998"
+auth = "None"
+
+[sparkmagic.kernel_r_credentials]
+username = ""
+password = ""
+url = "http://livy.localhost:8998"
+
+[sparkmagic.logging_config]
+version = 1
+
+[sparkmagic.logging_config.formatters.magicsFormatter]
+format = "%(asctime)s\t%(levelname)s\t%(message)s"
+datefmt = ""
+
+[sparkmagic.logging_config.handlers.magicsHandler]
+class = "hdijupyterutils.filehandler.MagicsFileHandler"
+formatter = "magicsFormatter"
+home_path = "{{ basedir }}/var"
+
+[sparkmagic.logging_config.loggers.magicsLogger]
+handlers = ["magicsHandler"]
+level = "DEBUG"
+propagate = 0
+
+[sparkmagic.authenticators]
+Kerberos = "sparkmagic.auth.kerberos.Kerberos"
+None = "sparkmagic.auth.customauth.Authenticator"
+Basic_Access = "sparkmagic.auth.basic.Basic"
+
+[sparkmagic.http_session_config.adapters]
+prefix = "http://"
+adapter = "requests.adapters.HTTPAdapter"

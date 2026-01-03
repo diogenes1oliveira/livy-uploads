@@ -46,6 +46,10 @@ class Authenticator:
             opportunistic_auth=assert_type(config.get("opportunistic_auth"), Optional[bool]),  # type: ignore
         )
 
+    @classmethod
+    def parse(cls, config: Optional[Mapping[str, Any]]) -> "Authenticator":
+        return cls.from_config(config)
+
 
 class MutualAuth(Enum):
     REQUIRED = 1

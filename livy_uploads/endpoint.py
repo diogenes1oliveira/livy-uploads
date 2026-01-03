@@ -1,7 +1,8 @@
 import threading
 from collections.abc import Mapping
 from logging import getLogger
-from typing import Any, Optional, TypeVar
+from pathlib import Path
+from typing import Any, Optional, TypeVar, Union
 
 import requests
 import requests.exceptions
@@ -24,7 +25,7 @@ class LivyEndpoint:
         self,
         url: str,
         default_headers: Optional[dict[str, str]] = None,
-        verify: Optional[bool] = True,
+        verify: Optional[Union[bool, Path]] = True,
         authenticator: Optional[Authenticator] = None,
         requests_session: Optional[requests.Session] = None,
         retry_policy: Optional[RetryPolicy] = None,
@@ -77,40 +78,6 @@ class LivyEndpoint:
                 self._auth = self.authenticator()  # type: ignore
             return self._auth
 
-    @classmethod
-    def from_config(cls, config: Optional[Mapping[str, Any]]) -> "LivyEndpoint":
-        if not config:
-            raise ValueError("config is required")
-
-        session = requests.Session()
-        session.trust_env = False
-        proxy = assert_type(config.get("proxy"), Optional[str])  # type: ignore
-        if proxy:
-            session.proxies.update(
-                {
-                    "http": proxy,
-                    "https": proxy,
-                }
-            )
-
-        retry_config = config.get("retry_policy")
-        if retry_config:
-            retry_policy: RetryPolicy = MaxTries(
-                count=assert_type(retry_config["max_tries"], int),
-                pause=assert_type(retry_config["pause"], float),
-            )
-        else:
-            retry_policy = NoRetry()
-
-        return cls(
-            url=assert_type(config["url"], str),
-            default_headers=assert_type(config.get("default_headers"), Optional[dict]),  # type: ignore
-            verify=assert_type(config.get("verify"), Optional[bool]),  # type: ignore
-            authenticator=Authenticator.from_config(config.get("auth")),
-            retry_policy=retry_policy,
-            proxy=proxy,
-        )
-
     def __str__(self) -> str:
         return self.__repr__()
 
@@ -153,8 +120,8 @@ class LivyEndpoint:
                 "method": method,
                 "url": self.url + path,
                 "headers": headers,
-                "auth": self.auth,
-                "verify": self.verify,
+                **({"auth": self.auth} if self.auth else {}),
+                "verify": self.verify if isinstance(self.verify, bool) else self.verify.as_posix(),
                 **kwargs,
             },
             exceptions=(LivyRetriableError,),
