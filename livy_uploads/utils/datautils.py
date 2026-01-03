@@ -301,5 +301,17 @@ def get_nested_key(obj: Any, key: str) -> Any:
 def is_module_name(s: str) -> bool:
     """
     Checks if a string is a valid module name.
+
+
+    >>> is_module_name("foo.bar")
+    True
+    >>> is_module_name("123invalid")
+    False
+    >>> is_module_name("foo..invalid")
+    False
+    >>> is_module_name("")
+    False
+    >>> is_module_name(".foo")
+    False
     """
     return False if not s else all(part.isidentifier() for part in s.split("."))

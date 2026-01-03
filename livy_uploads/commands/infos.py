@@ -1,3 +1,5 @@
+__all__ = ("SessionInfoCommand",)
+
 import dataclasses
 import logging
 from typing import ClassVar

@@ -1,0 +1,2 @@
+- Use cattrs for all parsing stuff;
+  - Perhaps a converter plugin?

@@ -2,6 +2,7 @@ import json
 
 import click
 
+from livy_uploads.cli.helpers.formats import display_item
 from livy_uploads.project import Project
 
 
@@ -16,7 +17,4 @@ def cli(ctx: click.Context) -> None:
 @click.pass_obj
 def dump(project: Project, compact: bool) -> None:
     config = project.config.raw_values
-    if compact:
-        click.echo(json.dumps(config))
-    else:
-        click.echo(json.dumps(config, indent=2))
+    display_item(config, compact=compact)

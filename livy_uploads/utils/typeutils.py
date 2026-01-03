@@ -1,5 +1,7 @@
 import collections.abc
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeVar, Union, overload
+import inspect
+from abc import ABC
+from typing import TYPE_CHECKING, Any, Literal, Optional, Protocol, TypeVar, Union, get_origin, overload
 
 from typing_extensions import TypeGuard
 
@@ -109,3 +111,82 @@ def is_list(obj: Any) -> TypeGuard[collections.abc.Sequence[Any]]:
         return False
 
     return isinstance(obj, collections.abc.Sequence) and isinstance(obj, collections.abc.Collection)
+
+
+def is_actual_class(obj: Any) -> TypeGuard[type]:
+    try:
+        return inspect.isclass(obj) and get_origin(obj) is None
+    except TypeError:
+        return False
+
+
+def is_actual_subclass(obj: Any, t: type[T]) -> TypeGuard[type[T]]:
+    return is_actual_class(obj) and issubclass(obj, t)
+
+
+@overload
+def is_concrete(obj: Any, t: None = None) -> bool: ...
+@overload
+def is_concrete(obj: Any, t: type[T]) -> TypeGuard[type[T]]: ...
+def is_concrete(obj: Any, t: Optional[type[T]] = None) -> bool:
+    """Check if obj is a concrete class (optionally of type t).
+
+    A class is concrete if:
+        - It is a class (not an instance)
+        - It is not a generic type
+        - It is not abstract
+        - It is not ABC or Protocol themselves
+        - It does not directly inherit from ABC
+        - It does not directly inherit from Protocol
+
+    Args:
+        obj: Object to check.
+        t: Optional parent type to verify inheritance.
+
+    Returns:
+        True if obj is a concrete class, False otherwise.
+
+    Examples:
+        >>> is_concrete(int)
+        True
+
+        >>> is_concrete(42)
+        False
+
+        >>> from abc import ABC, abstractmethod
+        >>> class SomeABC(ABC): pass
+        >>> is_concrete(SomeABC)
+        False
+
+        >>> class SomeAbstract(ABC):
+        ...     @abstractmethod
+        ...     def some_method(self): pass
+        >>> is_concrete(SomeAbstract)
+        False
+
+        >>> class SomeImpl(SomeAbstract):
+        ...     def some_method(self): pass
+        >>> is_concrete(SomeImpl)
+        True
+
+    """
+    try:
+        if (
+            inspect.isclass(obj)
+            and obj is not ABC
+            and obj is not Protocol
+            and get_origin(obj) is None
+            and not inspect.isabstract(obj)
+            and ABC not in obj.__bases__
+            and Protocol not in obj.__bases__
+        ):
+            cls = obj
+        else:
+            return False
+    except TypeError:
+        return False
+
+    if t is not None:
+        return issubclass(cls, t)
+    else:
+        return True

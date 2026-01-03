@@ -16,7 +16,7 @@ CACHE_DIRNAME = __name__.partition(".")[0]
 
 def interpolate_envvars(source: Mapping[str, Any], env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
     """
-    >>> _interpolate_envvars({"foo": "${BAR}_${BAR}"}, {"BAR": "baz"})
+    >>> interpolate_envvars({"foo": "${BAR}_${BAR}"}, {"BAR": "baz"})
     {'foo': 'baz_baz'}
     """
     env = env if env is not None else os.environ
@@ -34,6 +34,11 @@ def interpolate_envvars(source: Mapping[str, Any], env: Optional[Mapping[str, st
             result[k] = v
 
     return result
+
+
+def split_envvar(value: Optional[str]) -> list[str]:
+    value = (value or "").replace(",", " ").replace(";", " ").replace("|", " ")
+    return list(filter(None, value.split()))
 
 
 def get_default_cache_dir() -> Path:
