@@ -58,7 +58,6 @@ class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
     __impl_typename__: ClassVar[str] = "file"
     __impl_priority__: ClassVar[int] = 20  # explicit priority (can be auto-detected), higher than ModuleLoader
     __impl_tags__: ClassVar[tuple[str, ...]] = ("file:",)
-    __default_uris__: ClassVar[tuple[str, ...]] = ("file://./",)
 
     path: PurePosixPath
     "Path to the file or directory."

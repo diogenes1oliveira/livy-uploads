@@ -65,7 +65,7 @@ def display_list(
     items: Iterable[T],
     format: Optional[str],
     columns: Sequence[str],
-    compactify: Optional[Callable[[T], Union[str, int]]] = None,
+    compactify: Optional[Callable[[T], Optional[Union[str, int]]]] = None,
 ) -> None:
     if not format:
         if sys.stdout.isatty():

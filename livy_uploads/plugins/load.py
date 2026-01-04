@@ -116,9 +116,9 @@ def get_loaders(*sources: str) -> list[PluginLoader]:
 
     >>> with_default_loaders = get_loaders('./some/file.py')
     >>> [l.uri for l in with_default_loaders]
-    ['file://some/file.py', 'entrypoint://sparkrl.plugins.*/', 'file://.', 'module://livy_uploads']
+    ['file://some/file.py', 'entrypoint://sparkrl.plugins.*/', 'module://livy_uploads']
 
-    >>> no_default_loaders = get_loaders('some.package', './some/file.py', '!entrypoint://.*', '!file://./', '!module://.')
+    >>> no_default_loaders = get_loaders('some.package', './some/file.py', '!entrypoint://.*', '!module://.')
     >>> [l.uri for l in no_default_loaders]
     ['module://some.package', 'file://some/file.py']
     """
