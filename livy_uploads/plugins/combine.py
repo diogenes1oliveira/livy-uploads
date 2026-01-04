@@ -70,10 +70,10 @@ class CombinedLoader(PluginLoader):
         """
         Resolves all underlying loaders.
 
-        >>> loader = CombinedLoader.parse("module://os,entrypoint://.*")
+        >>> loader = CombinedLoader.parse("module://os,entrypoint://.p*")
         >>> (resolved_loader,) = loader.resolve()
         >>> [l.uri for l in resolved_loader.loaders]
-        ['module://os', 'entrypoint://sparkrl.plugins.commands/', 'entrypoint://sparkrl.plugins.patches/']
+        ['module://os', 'entrypoint://sparkrl.plugins.patches/']
         """
         resolved_loaders = list(
             itertools.chain.from_iterable(loader.resolve(basedir=basedir) for loader in self.loaders)

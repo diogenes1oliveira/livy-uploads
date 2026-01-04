@@ -12,9 +12,9 @@ __all__ = (
 import dataclasses
 import functools
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Optional, Protocol, TypeVar, runtime_checkable, Sequence
+from typing import Any, ClassVar, Generic, Optional, Protocol, TypeVar, runtime_checkable
 
 from typing_extensions import Self, TypeGuard
 

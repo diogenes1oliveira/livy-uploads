@@ -5,10 +5,10 @@ from typing import Any, Optional
 
 from typing_extensions import Self
 
+from livy_uploads.configs.utils import split_envvar
 from livy_uploads.plugins import constants
 from livy_uploads.plugins.combine import CombinedLoader
 from livy_uploads.plugins.load import get_loaders, resolve_loaders
-from livy_uploads.configs.utils import split_envvar
 
 LOGGER = logging.getLogger(__name__)
 

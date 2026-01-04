@@ -2,13 +2,20 @@ from typing import Optional
 
 import click
 
-from livy_uploads.cli.helpers.formats import display_list, with_format_option
+from livy_uploads.cli.helpers.formats import display_item, display_list, with_compact_option, with_format_option
 from livy_uploads.plugins import LOADER, constants
 
 
 @click.group(name="plugins")
 def cli() -> None:
     pass
+
+
+@cli.command(name="constants")
+@with_compact_option
+def constants_(compact: bool) -> None:
+    "Display the plugin app constants"
+    display_item(constants.as_json(), compact=compact)
 
 
 @cli.command(name="list")

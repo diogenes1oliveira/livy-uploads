@@ -11,7 +11,7 @@ import importlib.util
 from collections.abc import Iterator, Sequence
 from fnmatch import fnmatch
 from importlib.machinery import ModuleSpec
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar, Optional, TypeVar, cast, get_origin
 
@@ -132,7 +132,6 @@ class ModuleLoader(ModuleLoaderMixIn, PluginLoader):
 
     __impl_typename__: ClassVar[str] = "module"
     __impl_priority__: ClassVar[int] = 10  # explicit priority (can be auto-detected), lower than FileLoader
-    __default_uris__: ClassVar[tuple[str, ...]] = ("module://.",)
 
     module_name: str
     "Python module name (!)"

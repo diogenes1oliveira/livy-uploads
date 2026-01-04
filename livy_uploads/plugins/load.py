@@ -5,8 +5,9 @@ __all__ = (
 )
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, TypeVar, Union, Sequence
+from typing import Optional, TypeVar, Union
 
 from livy_uploads.plugins.base import PluginLoader
 from livy_uploads.plugins.combine import CombinedLoader
@@ -116,9 +117,9 @@ def get_loaders(*sources: str) -> list[PluginLoader]:
 
     >>> with_default_loaders = get_loaders('./some/file.py')
     >>> [l.uri for l in with_default_loaders]
-    ['file://some/file.py', 'entrypoint://sparkrl.plugins.*/', 'module://livy_uploads']
+    ['file://some/file.py', 'entrypoint://sparkrl.plugins.*/']
 
-    >>> no_default_loaders = get_loaders('some.package', './some/file.py', '!entrypoint://.*', '!module://.')
+    >>> no_default_loaders = get_loaders('some.package', './some/file.py', '!entrypoint://.*')
     >>> [l.uri for l in no_default_loaders]
     ['module://some.package', 'file://some/file.py']
     """

@@ -17,9 +17,11 @@ from typing import ClassVar, Optional, TypeVar
 from typing_extensions import Self
 
 from livy_uploads.configs.utils import split_envvar
+from livy_uploads.plugins import constants
 from livy_uploads.plugins.base import FoundObject, FoundPath, FoundType, Matcher, PluginLoader, Predicate
-from livy_uploads.plugins.modules import scan_module, scan_spec_paths
+from livy_uploads.plugins.modules import ModuleLoader, scan_module, scan_spec_paths
 from livy_uploads.plugins.utils import fix_group
+from livy_uploads.utils.typeutils import is_actual_class
 
 T = TypeVar("T")
 
@@ -119,7 +121,7 @@ class EntryPointsLoader(PluginLoader):
 
         return f"entrypoint://{group_part}/{name or ''}"
 
-    def resolve(self, *, basedir: Optional[Path] = None) -> tuple[Self, ...]:
+    def resolve(self, *, basedir: Optional[Path] = None) -> tuple[PluginLoader, ...]:
         """
         Resolves the entrypoints by finding the matching entrypoint groups (without loading them).
 
@@ -140,11 +142,9 @@ class EntryPointsLoader(PluginLoader):
         >>> loader
         EntryPointsLoader(groups=('sparkrl.plugins.patches',))
 
-        >>> (loader1, loader2) = EntryPointsLoader.parse(".*").resolve()
-        >>> loader1
-        EntryPointsLoader(groups=('sparkrl.plugins.commands',))
-        >>> loader2
-        EntryPointsLoader(groups=('sparkrl.plugins.patches',))
+        >>> loaders = EntryPointsLoader.parse(".*").resolve()
+        >>> [l.uri for l in loaders]
+        ['entrypoint://sparkrl.plugins.commands/', 'module://livy_uploads', 'entrypoint://sparkrl.plugins.patches/']
 
         >>> loaders = EntryPointsLoader.parse(".commands,.patches").resolve()
         >>> [l.uri for l in loaders]
@@ -152,7 +152,7 @@ class EntryPointsLoader(PluginLoader):
 
         >>> loaders = EntryPointsLoader.parse("sparkrl.plugins.*").resolve()
         >>> [l.uri for l in loaders]
-        ['entrypoint://sparkrl.plugins.commands/', 'entrypoint://sparkrl.plugins.patches/']
+        ['entrypoint://sparkrl.plugins.commands/', 'module://livy_uploads', 'entrypoint://sparkrl.plugins.patches/']
 
         >>> EntryPointsLoader.parse("group.that.will.never.exist").resolve()
         Traceback (most recent call last):
@@ -179,15 +179,22 @@ class EntryPointsLoader(PluginLoader):
             raise FileNotFoundError(f"no matched entrypoints for groups {self.groups!r}")
 
         groups = tuple(sorted(matched.keys()))
-        loaders: list[Self] = []
+        loaders: list[PluginLoader] = []
 
         for group in groups:
             entry_points = tuple(matched[group])
-            loader = dataclasses.replace(self, groups=(group,))
-            object.__setattr__(loader, "entry_points", entry_points)
-            loaders.append(loader)
+            if group == constants.LOADERS_GROUP:
+                for entry_point in entry_points:
+                    loaders.extend(self._resolve_loaders(entry_point))
+            else:
+                loader = dataclasses.replace(self, groups=(group,))
+                object.__setattr__(loader, "entry_points", entry_points)
+                loaders.append(loader)
 
         return tuple(loaders)
+
+    def _resolve_loaders(self, entry_point: EntryPoint) -> Iterator[PluginLoader]:
+        yield ModuleLoader(module_name=entry_point.module)
 
     def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
         """
@@ -294,7 +301,6 @@ def scan_entrypoints(
     """
     import inspect
 
-    from livy_uploads.utils.typeutils import is_actual_class
 
     pattern = pattern or "*"
 

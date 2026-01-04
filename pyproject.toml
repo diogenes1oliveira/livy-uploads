@@ -26,15 +26,8 @@ dependencies = [
 [project.scripts]
 sparkrl = "livy_uploads.cli.__main__:cli"
 
-[project.entry-points."livy_uploads.plugins"]
-user_ids = "livy_uploads.configs.user_ids:UserIdsSetup"
-sparkmagic_conf = "livy_uploads.configs.sparkmagic_conf:SparkMagicConfSetup"
-
-[project.entry-points."livy_uploads.plugins.commands"]
-session_info = "livy_uploads.commands.infos:SessionInfoCommand"
-
-[project.entry-points."livy_uploads.plugins.patches"]
-sparkmagic_reload = "livy_uploads.patches.sparkmagic:SparkMagicReloadPatch"
+[project.entry-points."sparkrl.plugins.loaders"]
+livy_uploads_loader = "livy_uploads"
 
 [project.entry-points."sparkrl.plugins.commands"]
 session_info = "livy_uploads.commands.infos:SessionInfoCommand"
