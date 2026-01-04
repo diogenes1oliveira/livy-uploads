@@ -21,7 +21,7 @@ from livy_uploads.plugins import constants
 from livy_uploads.plugins.base import FoundObject, FoundPath, FoundType, Matcher, PluginLoader, Predicate
 from livy_uploads.plugins.modules import ModuleLoader, scan_module, scan_spec_paths
 from livy_uploads.plugins.utils import fix_group
-from livy_uploads.utils.typeutils import is_actual_class
+from livy_uploads.utils.typeutils import is_actual_class, is_actual_subclass
 
 T = TypeVar("T")
 
@@ -194,7 +194,18 @@ class EntryPointsLoader(PluginLoader):
         return tuple(loaders)
 
     def _resolve_loaders(self, entry_point: EntryPoint) -> Iterator[PluginLoader]:
-        yield ModuleLoader(module_name=entry_point.module)
+        if not entry_point.attr:
+            yield ModuleLoader(module_name=entry_point.module)
+            return
+
+        raise NotImplementedError(".loaders group values not implemented yet")
+        # TODO: test some implementation for this
+        # value = entry_point.load()
+        # if not is_actual_subclass(value, PluginLoader):
+        #     LOGGER.warning(f"expected a PluginLoader in entrypoint %s, got %s instead", entry_point, type(value))
+        #     return
+
+        # yield value()  # pyright: ignore[reportAbstractUsage]
 
     def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
         """
@@ -300,7 +311,6 @@ def scan_entrypoints(
     True
     """
     import inspect
-
 
     pattern = pattern or "*"
 

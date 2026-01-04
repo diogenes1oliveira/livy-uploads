@@ -27,7 +27,7 @@ dependencies = [
 sparkrl = "livy_uploads.cli.__main__:cli"
 
 [project.entry-points."sparkrl.plugins.loaders"]
-livy_uploads_loader = "livy_uploads"
+livy_uploads_module = "livy_uploads"
 
 [project.entry-points."sparkrl.plugins.commands"]
 session_info = "livy_uploads.commands.infos:SessionInfoCommand"
