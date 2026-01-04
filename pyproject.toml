@@ -11,7 +11,6 @@ requires-python = ">=3.9"
 
 dependencies = [
     "attrs>=25.4.0",
-    "backports-entry-points-selectable>=1.3.0",
     "beautifulsoup4>=4.14.3",
     "cattrs>=25.3.0",
     "docstring-parser>=0.17.0",
@@ -32,9 +31,15 @@ user_ids = "livy_uploads.configs.user_ids:UserIdsSetup"
 sparkmagic_conf = "livy_uploads.configs.sparkmagic_conf:SparkMagicConfSetup"
 
 [project.entry-points."livy_uploads.plugins.commands"]
-infos = "livy_uploads.commands.infos"
+session_info = "livy_uploads.commands.infos:SessionInfoCommand"
 
 [project.entry-points."livy_uploads.plugins.patches"]
+sparkmagic_reload = "livy_uploads.patches.sparkmagic:SparkMagicReloadPatch"
+
+[project.entry-points."sparkrl.plugins.commands"]
+session_info = "livy_uploads.commands.infos:SessionInfoCommand"
+
+[project.entry-points."sparkrl.plugins.patches"]
 sparkmagic_reload = "livy_uploads.patches.sparkmagic:SparkMagicReloadPatch"
 
 [build-system]
@@ -146,3 +151,6 @@ treat_comments_as_code = [
     "# isort: on",
 ]
 known_first_party = ["livy_uploads"]
+
+[tool.pyright]
+reportSelfClsParameterName = "none"

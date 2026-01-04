@@ -1,120 +1,161 @@
-import collections.abc
-import importlib
-import importlib.metadata
-import importlib.util
-import inspect
-import os
-from pathlib import Path
-from types import ModuleType
-from typing import Type, TypeVar, Union
+__all__ = (
+    "get_loader",
+    "get_loaders",
+    "resolve_loaders",
+)
 
+import logging
+from pathlib import Path
+from typing import Optional, TypeVar, Union, Sequence
+
+from livy_uploads.plugins.base import PluginLoader
+from livy_uploads.plugins.combine import CombinedLoader
+from livy_uploads.plugins.entrypoints import EntryPointsLoader
+from livy_uploads.plugins.files import FileLoader
+from livy_uploads.plugins.modules import ModuleLoader
+
+DEFAULT_LOADERS = (FileLoader, ModuleLoader, EntryPointsLoader, CombinedLoader)
+
+LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
 
+LOADER: Optional[PluginLoader] = None
 
-def load_plugins(t: Type[T], *sources: Union[str, Path, ModuleType]) -> list[Type[T]]:
+
+def get_loader(source: Union[str, Path]) -> PluginLoader:
     """
-    Loads plugins from entry points and optional sources.
-
-    First loads plugins from project.entry-points."livy_uploads.plugins",
-    then loads from the provided sources (module names, paths to .py files).
-
-    The module `__all__` is used to determine the plugins to load from sources.
+    Builds the plugin loader for the given source spec.
 
     Args:
-        t: The type of the plugins to load.
-        sources: Optional source module names or paths to .py files.
+        source: the source spec or path.
 
-    Returns:
-        A list of plugins.
+    Parsing behavior:
+
+    - Path objects are passed directly to `FileLoader`:
+
+        >>> get_loader(Path("path/to/plugin.py"))
+        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+
+    - Strings with a `://` separator are parsed as a loader URI:
+
+        >>> get_loader("module://some.package")
+        ModuleLoader(module_name='some.package')
+
+        >>> get_loader("file://path/to/plugin.py")
+        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+
+    - Strings with a `:` separator are parsed as a tagged loader spec:
+
+        >>> get_loader("file:path/to/plugin.py")
+        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+
+        >>> get_loader("entrypoint:some.group")
+        EntryPointsLoader(groups=('some.group',))
+
+    - Otherwise, try all available loaders with explicit priority order, higher first.
+
+        >>> get_loader("some.package")
+        ModuleLoader(module_name='some.package')
+
+        >>> get_loader("some.package")
+        ModuleLoader(module_name='some.package')
+
+        >>> get_loader("./path/to/plugin.py")
+        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+
+        >>> get_loader("some-file-but-with-no-slashes.py")
+        Traceback (most recent call last):
+        ...
+        ValueError: ...
     """
-    plugin_classes = []
-
-    # Load from entry points first
-    try:
-        entry_points_dict = importlib.metadata.entry_points()
-        # In Python 3.9, entry_points() returns a dict
-        # In Python 3.10+, it returns an EntryPoints object with select() method
-        if isinstance(entry_points_dict, dict):
-            entry_points = entry_points_dict.get("livy_uploads.plugins", [])
-        else:
-            # Python 3.10+ with group parameter
-            entry_points = entry_points_dict.select(group="livy_uploads.plugins")  # type: ignore[unreachable]
-
-        for entry_point in entry_points:
-            try:
-                plugin_class = entry_point.load()
-                if inspect.isclass(plugin_class) and issubclass(plugin_class, t):
-                    plugin_classes.append(plugin_class)
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # Then load from provided sources
-    for source in sources:
-        plugin_classes.extend(_load_from_source(source, t))
-
-    return plugin_classes
-
-
-def _load_from_source(source: Union[str, Path, ModuleType], t: Type[T]) -> list[Type[T]]:
-    """
-    Loads plugins from a single source.
-
-    Args:
-        source: the source module name, module object or path to a .py file.
-        t: The type of the plugins to load.
-
-    Returns:
-        A list of plugins.
-    """
-    module: ModuleType
-
-    if isinstance(source, str):
-        if os.path.sep in source:
-            source = Path(source)
-        elif is_module_name(source):
-            module = importlib.import_module(source)
-        else:
-            raise ValueError(f"invalid source type: {source!r}")
-
     if isinstance(source, Path):
-        source = source.absolute()
-        if source.suffix != ".py":
-            raise ValueError(f"source must be a .py file: {source!r}")
-        module_name = source.stem
-        if not is_module_name(module_name):
-            raise ValueError(f"source filename is not a valid Python module name: {source!r}")
+        return FileLoader.parse(str(source))
 
-        spec = importlib.util.spec_from_file_location(module_name, source)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"could not load module from {source!r}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    scheme, sep, rest = source.partition("://")
 
-    if isinstance(source, ModuleType):
-        module = source
+    if sep:
+        if not scheme:
+            raise ValueError(f"no scheme in plugin source URI: {source!r}")
 
-    candidates = getattr(module, "__all__", [])
-    if isinstance(candidates, str) or not isinstance(candidates, collections.abc.Sequence):
-        raise ValueError(f"__all__ must be a sequence: {candidates!r}")
-
-    plugin_classes = []
-
-    for name in candidates:
-        name = str(name)
         try:
-            value = getattr(module, name)
-            if inspect.isclass(value) and issubclass(value, t):
-                plugin_classes.append(value)
-        except (TypeError, AttributeError):
+            loader_cls = PluginLoader.get_implementation(typename=scheme)
+        except ValueError:
+            raise ValueError(f"no plugin loader for {scheme=!r}: {source!r}") from None
+
+        return loader_cls.parse(rest)
+
+    tag, sep, spec = source.partition(":")
+    if tag and sep:
+        tag = tag + sep
+        try:
+            loader_cls = PluginLoader.get_implementation(tags=(tag,))
+        except ValueError:
+            pass
+        else:
+            return loader_cls.parse(spec)
+
+    spec = source
+    for loader_cls in PluginLoader.get_implementations(min_priority=1).values():
+        try:
+            return loader_cls.parse(spec)
+        except ValueError:
             continue
 
-    return plugin_classes
+    raise ValueError(f"no plugin loader can handle {spec=!r}")
 
 
-def is_module_name(s: str) -> bool:
+def get_loaders(*sources: str) -> list[PluginLoader]:
     """
-    Checks if a string is a valid module name.
+    Builds the plugin loaders for the given source specs, forwarding to :meth:`get_loader`.
+
+    The default URIs for each loader are added to the end of the list. You can exclude each of them by adding a `!`
+    prefix to the source spec.
+
+    Args:
+        sources: the source specs or URI negation.
+
+    >>> with_default_loaders = get_loaders('./some/file.py')
+    >>> [l.uri for l in with_default_loaders]
+    ['file://some/file.py', 'entrypoint://sparkrl.plugins.*/', 'file://.', 'module://livy_uploads']
+
+    >>> no_default_loaders = get_loaders('some.package', './some/file.py', '!entrypoint://.*', '!file://./', '!module://.')
+    >>> [l.uri for l in no_default_loaders]
+    ['module://some.package', 'file://some/file.py']
     """
-    return all(part.isidentifier() for part in s.split("."))
+    all_sources = [s for s in sources if not s.startswith("!")]
+    all_sources.extend(PluginLoader.get_default_uris())
+    all_exclusions = {s.removeprefix("!") for s in sources if s.startswith("!")}
+
+    loaders: dict[str, PluginLoader] = {}
+
+    for s in all_sources:
+        if s in all_exclusions:
+            continue
+        loader = get_loader(s)
+        loaders[loader.uri] = loader
+
+    return list(loaders.values())
+
+
+def resolve_loaders(loaders: Sequence[PluginLoader], basedir: Optional[Path] = None) -> list[PluginLoader]:
+    """
+    Sets up the plugin loaders for the given source specs.
+
+    Args:
+        sources: the source specs or URI negation.
+        basedir: the base directory to setup relative file paths against
+    """
+    resolved_loaders_dict: dict[str, PluginLoader] = {}
+    failed_uris: list[str] = []
+
+    for loader in loaders:
+        try:
+            for resolved_loader in loader.resolve(basedir=basedir):
+                resolved_loaders_dict[resolved_loader.uri] = resolved_loader
+        except FileNotFoundError:
+            failed_uris.append(loader.uri)
+
+    if failed_uris:
+        LOGGER.warning("skipped %d plugins: %r", len(failed_uris), failed_uris)
+
+    return list(resolved_loaders_dict.values())

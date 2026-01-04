@@ -5,6 +5,7 @@ import click
 
 from livy_uploads.cli.command import cli as command_cli
 from livy_uploads.cli.config import cli as config_cli
+from livy_uploads.cli.plugins import cli as plugins_cli
 from livy_uploads.cli.session import cli as session_cli
 from livy_uploads.project import LOG_LEVEL_ENVVAR
 
@@ -22,6 +23,7 @@ def cli(ctx: click.Context, log_level: Optional[str]) -> None:
 cli.add_command(config_cli)
 cli.add_command(session_cli)
 cli.add_command(command_cli)
+cli.add_command(plugins_cli)
 
 if __name__ == "__main__":
     cli()

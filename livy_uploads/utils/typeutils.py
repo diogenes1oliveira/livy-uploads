@@ -190,3 +190,13 @@ def is_concrete(obj: Any, t: Optional[type[T]] = None) -> bool:
         return issubclass(cls, t)
     else:
         return True
+
+
+def get_short_description(obj: Any) -> Optional[str]:
+    if not (doc := getattr(obj, "__doc__", None)):
+        return None
+
+    import docstring_parser
+
+    parsed = docstring_parser.parse(doc)
+    return parsed.short_description or None
