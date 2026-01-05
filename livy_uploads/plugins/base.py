@@ -18,7 +18,7 @@ from typing import Any, ClassVar, Generic, Optional, Protocol, TypeVar, runtime_
 
 from typing_extensions import Self, TypeGuard
 
-from livy_uploads.configs.impl import Implementation
+from livy_uploads.plugins.impls import Implementation, get_implementations
 from livy_uploads.utils.typeutils import get_short_description, is_actual_subclass
 
 T = TypeVar("T")
@@ -269,7 +269,7 @@ class PluginLoader(Loader, Implementation, ABC):
         """
         all_default_uris = set[str]()
 
-        for impl in cls.get_implementations().values():
+        for impl in get_implementations(cls).values():
             default_uris = impl.__default_uris__ or ()
             all_default_uris.update(default_uris)
 

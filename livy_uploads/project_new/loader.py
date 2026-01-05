@@ -1,38 +1,46 @@
+__all__ = ("GlobalEnvLoader",)
+
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from typing_extensions import Self
 
 from livy_uploads.configs.utils import split_envvar
-from livy_uploads.plugins import constants
-from livy_uploads.plugins.combine import CombinedLoader
-from livy_uploads.plugins.load import get_loaders, resolve_loaders
+from livy_uploads.plugins import constants, register_default_loaders
+from livy_uploads.plugins.loaders import CombinedLoader, get_loaders, resolve_loaders
 
 LOGGER = logging.getLogger(__name__)
 
 
-class GlobalLoader(CombinedLoader):
-    """
-    A singleton loader for the whole app.
-    """
+DEFAULT_FILE_LOADER = "file://./"
 
-    _instance: Optional["GlobalLoader"] = None
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "GlobalLoader":
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+class GlobalEnvLoader(CombinedLoader):
+    """
+    A global loader for the whole app that uses the `APPNAME_PLUGINS` environment variable.
+    """
 
     def __init__(self) -> None:
         super().__init__(loaders=[])
 
     def setup(self) -> Self:
+        """
+        Recreates all loaders specified in the environment variable.
+        """
         constants.reload()
         sources = split_envvar(os.getenv(constants.PLUGINS_ENV, ""))
+
+        if DEFAULT_FILE_LOADER not in sources:
+            sources.append(DEFAULT_FILE_LOADER)
+
+        register_default_loaders()
+
         loaders = get_loaders(*sources)
         object.__setattr__(self, "loaders", loaders)
+
+        LOGGER.debug("got %d loaders: %s", len(loaders), " ".join(l.uri for l in loaders))
         return self
 
     def resolve(self, *, basedir: Optional[Path] = None) -> tuple[Self]:
@@ -42,7 +50,6 @@ class GlobalLoader(CombinedLoader):
         Raises:
             FileNotFoundError: if the loader cannot be resolved.
         """
-        self.setup()
         loaders = resolve_loaders(self.loaders, basedir=basedir)
         object.__setattr__(self, "loaders", loaders)
 

@@ -32,6 +32,7 @@ def assert_type(value: Any, expected_type: type[T]) -> T:
     """
     Type assertion utility function.
     """
+    nullable = False
     try:
         origin = expected_type.__origin__  # type: ignore[attr-defined]
         if origin is Union:

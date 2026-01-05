@@ -1,3 +1,5 @@
+__all__ = ("SessionCommand", "handles_body")
+
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Generic, Optional, TypeVar
 
@@ -5,6 +7,7 @@ import docstring_parser
 from IPython.core.magic_arguments import argument
 
 from livy_uploads.client.handle import SessionHandle
+from livy_uploads.plugins.impls import Implementation
 
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable)
@@ -29,13 +32,16 @@ def handles_body(f: F) -> F:
     return f
 
 
-class SessionCommand(ABC, Generic[T]):
+class SessionCommand(Implementation, ABC, Generic[T]):
     """
     Base class for commands that operate on a Livy session.
     """
 
     __command__: ClassVar[str]
     "Identifier name of this command/magic."
+
+    __plugin_group__: ClassVar[str] = "sparkrl.plugins.commands"
+    "Plugin group name for this command."
 
     def __init__(self, **kwargs: Any) -> None:
         """

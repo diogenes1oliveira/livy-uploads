@@ -1,4 +1,6 @@
 import json
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -10,7 +12,7 @@ from livy_uploads.cli.__main__ import cli
 
 @pytest.fixture(autouse=True)
 def setup_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SPARKRL_PLUGINS", "")
+    monkeypatch.setenv("SPARKRL_PLUGINS", "!file://./")
 
 
 @pytest.mark.parametrize(
@@ -19,15 +21,38 @@ def setup_env(monkeypatch: pytest.MonkeyPatch):
         (
             ["list", "--no-resolve", "--format=compact"],
             [
-                "entrypoint://sparkrl.plugins.*/",
+                "entrypoint://.*/",
+                "impl://.*",
             ],
         ),
         (
             ["list", "--format=compact"],
             [
                 "entrypoint://sparkrl.plugins.commands/",
+                "entrypoint://sparkrl.plugins.configurables/",
                 "module://livy_uploads",
                 "entrypoint://sparkrl.plugins.patches/",
+                "impl://sparkrl.plugins.commands",
+                "impl://sparkrl.plugins.configurables",
+                "impl://sparkrl.plugins.patches",
+            ],
+        ),
+        (
+            ("impls", "--format=compact"),
+            [
+                "entrypoint://sparkrl.plugins.commands/base#SessionCommand",
+                "entrypoint://sparkrl.plugins.configurables/base#Configurable",
+                "entrypoint://sparkrl.plugins.patches/base#Patch",
+            ],
+        ),
+        (
+            ("impls", "--format=compact", "scan"),
+            [
+                "entrypoint://sparkrl.plugins.commands/base#SessionCommand",
+                "entrypoint://sparkrl.plugins.commands/infos#SessionInfoCommand",
+                "entrypoint://sparkrl.plugins.configurables/base#Configurable",
+                "entrypoint://sparkrl.plugins.patches/base#Patch",
+                "entrypoint://sparkrl.plugins.patches/sparkmagic_reload#SparkMagicReloadPatch",
             ],
         ),
     ],
@@ -55,3 +80,23 @@ def test_plugins_constants():
         "GROUP_PREFIX": "sparkrl.plugins.",
         "LOADERS_GROUP": "sparkrl.plugins.loaders",
     }
+
+
+def test_plugins_impls():
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli, args=["plugins", "impls", "--format=json"])
+
+    assert result.exit_code == 0, result.output
+
+    infos_by_name = {item["name"]: _keep_only(item, "name", "type", "group") for item in json.loads(result.stdout)}
+
+    command_info = infos_by_name["SessionCommand"]
+    assert command_info == {
+        "name": "SessionCommand",
+        "type": "interface",
+        "group": "sparkrl.plugins.commands",
+    }
+
+
+def _keep_only(info: Mapping[str, Any], *attrs: str) -> dict[str, Any]:
+    return {k: v for k, v in info.items() if k in attrs}

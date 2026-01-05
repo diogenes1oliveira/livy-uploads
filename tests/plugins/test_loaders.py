@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from livy_uploads.plugins.base import Matcher
-from livy_uploads.plugins.combine import CombinedLoader
+from livy_uploads.plugins.loaders import CombinedLoader
 
 # Test plugin implementations for collections.abc.Mapping and collections.abc.Sequence
 PLUGIN_CODE = """
@@ -66,7 +66,7 @@ def setup_plugin_env(monkeypatch: pytest.MonkeyPatch):
 class TestCombineLoader:
     @pytest.fixture
     def combined_loader(self, plugin_file: Path):
-        (loader,) = CombinedLoader.parse(f"module://{PLUGIN_MODULE},file://{plugin_file}").resolve()
+        (loader,) = CombinedLoader.parse(f"module://{PLUGIN_MODULE}&file://{plugin_file}").resolve()
         return loader
 
     def test_find_paths(self):

@@ -1,13 +1,17 @@
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from abc import abstractmethod
+from typing import ClassVar, Protocol
 
-if TYPE_CHECKING:
-    from livy_uploads.project import Project
-else:
-    Project = Any
+from livy_uploads.plugins.impls import Implementation
 
 
-class Patch(ABC):
+class Patch(Implementation, Protocol):
+    """
+    Ad-hoc patches.
+    """
+
+    __plugin_group__: ClassVar[str] = "sparkrl.plugins.patches"
+    "Entrypoint group name for loading Patch implementations."
+
     @abstractmethod
-    def apply(self, project: Project) -> None:
+    def apply_patch(self) -> None:
         raise NotImplementedError

@@ -19,9 +19,9 @@ from typing_extensions import Self
 from livy_uploads.configs.utils import split_envvar
 from livy_uploads.plugins import constants
 from livy_uploads.plugins.base import FoundObject, FoundPath, FoundType, Matcher, PluginLoader, Predicate
-from livy_uploads.plugins.modules import ModuleLoader, scan_module, scan_spec_paths
-from livy_uploads.plugins.utils import fix_group
-from livy_uploads.utils.typeutils import is_actual_class, is_actual_subclass
+from livy_uploads.plugins.modules import ModuleLoader, scan_module
+from livy_uploads.plugins.utils import fix_group, resolve_group
+from livy_uploads.utils.typeutils import is_actual_class
 
 T = TypeVar("T")
 
@@ -36,7 +36,7 @@ class EntryPointsLoader(PluginLoader):
 
     __impl_typename__: ClassVar[str] = "entrypoint"
     __impl_tags__: ClassVar[tuple[str, ...]] = ("entrypoint:",)
-    __default_uris__: ClassVar[tuple[str, ...]] = ("entrypoint://.*",)
+    __default_uris__: ClassVar[tuple[str, ...]] = ("entrypoint://.*/",)
 
     groups: tuple[str, ...]
     "The entrypoint group names or patterns with wildcards."
@@ -53,7 +53,9 @@ class EntryPointsLoader(PluginLoader):
     @classmethod
     def parse(cls, value: str) -> Self:
         """
-        Parses a spec like `<group[,group2]>[:<pattern>]` or `<group>?select=<pattern>`.
+        Parses a spec like `<group[,group2,...]>[/<name>][:<attr>]`.
+
+        This only parses the groups: anything after a colon `:`, question mark `?`, or slash `/` is ignored.
 
         >>> EntryPointsLoader.parse("some.group")
         EntryPointsLoader(groups=('some.group',))
@@ -65,36 +67,27 @@ class EntryPointsLoader(PluginLoader):
         EntryPointsLoader(groups=('some.group', 'other.group'))
 
         >>> EntryPointsLoader.parse(".*")
-        EntryPointsLoader(groups=('sparkrl.plugins.*',))
+        EntryPointsLoader(groups=('.*',))
 
-        >>> EntryPointsLoader.parse("*")
-        EntryPointsLoader(groups=('__all__',))
-
-        >>> EntryPointsLoader.parse(".commands")
-        EntryPointsLoader(groups=('sparkrl.plugins.commands',))
-
-        >>> EntryPointsLoader.parse(".patches")
-        EntryPointsLoader(groups=('sparkrl.plugins.patches',))
+        >>> EntryPointsLoader.parse("")
+        EntryPointsLoader(groups=())
 
         >>> EntryPointsLoader.parse(".commands,.patches")
-        EntryPointsLoader(groups=('sparkrl.plugins.commands', 'sparkrl.plugins.patches'))
+        EntryPointsLoader(groups=('.commands', '.patches'))
 
-        >>> EntryPointsLoader.parse("some.group?select=field")
+        >>> EntryPointsLoader.parse("some.group/name:attr?q=whatever")
         EntryPointsLoader(groups=('some.group',))
         """
-        # Handle ?select= syntax (ignore the pattern part for now)
-        if "?" in value:
-            value, _, _ = value.partition("?select=")
-
-        # Handle :pattern syntax (ignore the pattern part)
-        value, _, _ = value.partition(":")
-
+        value = value.partition("?")[0].partition("/")[0].partition(":")[0]
         groups = split_envvar(value)
         return cls(groups=tuple(groups))
 
     def named_uri(self, name: Optional[str]) -> str:
         """
-        URI in the format `entrypoint://<group[,group2]>[/<name>]`.
+        URI in the format `entrypoint://<group[,group2]>[/<name>][:<attr>]`.
+
+        Args:
+            name: the name of the entrypoint, possibly with an `:<attr>` suffix.
 
         >>> loader = EntryPointsLoader.parse("some.group")
         >>> loader.named_uri(None)
@@ -109,17 +102,28 @@ class EntryPointsLoader(PluginLoader):
 
         >>> loader = EntryPointsLoader.parse("*")
         >>> loader.named_uri(None)
-        'entrypoint:///'
+        'entrypoint://*/'
 
         >>> loader.uri
-        'entrypoint:///'
+        'entrypoint://*/'
         """
-        if set(self.groups) == {"__all__"}:
-            group_part = ""
-        else:
-            group_part = ",".join(self.groups)
+        spec = name or ""
+        name, sep, attr = spec.partition(":")
+        if sep:
+            if not attr:
+                raise ValueError(f"invalid entrypoint spec with ':' but no attribute: {spec!r}")
+            if not name:
+                raise ValueError(f"invalid entrypoint spec with ':' but no name: {spec!r}")
 
-        return f"entrypoint://{group_part}/{name or ''}"
+        url = "entrypoint://" + ",".join(self.groups) + "/"
+        if not name:
+            return url
+
+        url += f"{name}"
+        if attr:
+            url += f":{attr}"
+
+        return url
 
     def resolve(self, *, basedir: Optional[Path] = None) -> tuple[PluginLoader, ...]:
         """
@@ -138,27 +142,28 @@ class EntryPointsLoader(PluginLoader):
         >>> loader
         EntryPointsLoader(groups=('sparkrl.plugins.commands',))
 
-        >>> (loader,) = EntryPointsLoader.parse(".patches").resolve()
-        >>> loader
-        EntryPointsLoader(groups=('sparkrl.plugins.patches',))
-
-        >>> loaders = EntryPointsLoader.parse(".*").resolve()
+        >>> loaders = EntryPointsLoader(groups=(".loaders", ".patc*")).resolve()
         >>> [l.uri for l in loaders]
-        ['entrypoint://sparkrl.plugins.commands/', 'module://livy_uploads', 'entrypoint://sparkrl.plugins.patches/']
+        ['module://livy_uploads', 'entrypoint://sparkrl.plugins.patches/']
 
         >>> loaders = EntryPointsLoader.parse(".commands,.patches").resolve()
         >>> [l.uri for l in loaders]
         ['entrypoint://sparkrl.plugins.commands/', 'entrypoint://sparkrl.plugins.patches/']
 
-        >>> loaders = EntryPointsLoader.parse("sparkrl.plugins.*").resolve()
+        >>> loaders = EntryPointsLoader.parse("sparkrl.plugins.load*").resolve()
         >>> [l.uri for l in loaders]
-        ['entrypoint://sparkrl.plugins.commands/', 'module://livy_uploads', 'entrypoint://sparkrl.plugins.patches/']
+        ['module://livy_uploads']
 
         >>> EntryPointsLoader.parse("group.that.will.never.exist").resolve()
         Traceback (most recent call last):
         ...
         FileNotFoundError: ...
         """
+        if any(g == "*" for g in self.groups):
+            group_patterns = {"*"}
+        else:
+            group_patterns = {resolve_group(g) for g in self.groups}
+
         entrypoints_loader = importlib.metadata.entry_points()
         all_entry_points: list[EntryPoint]
 
@@ -170,9 +175,9 @@ class EntryPointsLoader(PluginLoader):
             all_entry_points = entrypoints_loader.select()  # type: ignore[unreachable]
 
         matched: dict[str, list[EntryPoint]] = {}
-        for group in self.groups:
+        for group in group_patterns:
             for entry_point in all_entry_points:
-                if group == "__all__" or fnmatch(entry_point.group, group):
+                if fnmatch(entry_point.group, group):
                     matched.setdefault(entry_point.group, []).append(entry_point)
 
         if not matched:
@@ -209,21 +214,9 @@ class EntryPointsLoader(PluginLoader):
 
     def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
         """
-        Finds file paths relative to the entrypoint module directories.
-
-        This will skip the loaders that don't come from a file path.
+        Always empty, as entrypoints do not provide paths.
         """
-        assert self.entry_points is not None
-
-        for entry_point in self.entry_points:
-            module = entry_point.module
-            spec = importlib.util.find_spec(module)
-            if spec is None:
-                continue
-
-            for filename, path in scan_spec_paths(spec, pattern=pattern):
-                uri = self.named_uri(filename)
-                yield FoundPath(path=path, uri=uri, pattern=pattern, loader=self)
+        return iter(())
 
     def find_objects(
         self,
@@ -272,9 +265,13 @@ class EntryPointsLoader(PluginLoader):
         assert self.entry_points is not None
         matcher = match or Matcher.subclass(t)
 
-        for name, cls, _entry_point in scan_entrypoints(
+        for name, cls, entry_point in scan_entrypoints(
             self.entry_points, pattern=pattern, matcher=matcher, predicate=predicate
         ):
+            if name:
+                name = entry_point.name + "#" + name
+            else:
+                name = entry_point.name
             uri = self.named_uri(name)
             yield FoundType(type=cls, uri=uri, pattern=pattern, loader=self)
 
