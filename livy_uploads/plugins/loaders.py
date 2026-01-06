@@ -18,7 +18,7 @@ from typing import ClassVar, Optional, TypeVar, Union, cast
 
 from typing_extensions import Self
 
-from livy_uploads.plugins.base import FoundObject, FoundPath, FoundType, Matcher, PluginLoader, Predicate
+from livy_uploads.plugins.base import FoundObject, FoundPath, FoundType, Matcher, PluginLoader
 from livy_uploads.plugins.entrypoints import EntryPointsLoader
 from livy_uploads.plugins.files import FileLoader
 from livy_uploads.plugins.impls import (
@@ -59,7 +59,7 @@ def get_loader(source: Union[str, Path]) -> PluginLoader:
     - Path objects are passed directly to `FileLoader`:
 
         >>> get_loader(Path("path/to/plugin.py"))
-        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+        FileLoader(path=PosixPath('path/to/plugin.py'))
 
     - Strings with a `://` separator are parsed as a loader URI:
 
@@ -67,12 +67,12 @@ def get_loader(source: Union[str, Path]) -> PluginLoader:
         ModuleLoader(module_name='some.package')
 
         >>> get_loader("file://path/to/plugin.py")
-        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+        FileLoader(path=PosixPath('path/to/plugin.py'))
 
     - Strings with a `:` separator are parsed as a tagged loader spec:
 
         >>> get_loader("file:path/to/plugin.py")
-        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+        FileLoader(path=PosixPath('path/to/plugin.py'))
 
         >>> get_loader("entrypoint:some.group")
         EntryPointsLoader(groups=('some.group',))
@@ -88,7 +88,7 @@ def get_loader(source: Union[str, Path]) -> PluginLoader:
         ModuleLoader(module_name='top_level_package')
 
         >>> get_loader("./path/to/plugin.py")
-        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+        FileLoader(path=PosixPath('path/to/plugin.py'))
 
         >>> get_loader("some-file-but-with-no-slashes.py")
         Traceback (most recent call last):
@@ -229,7 +229,7 @@ class CombinedLoader(PluginLoader):
 
         >>> register_default_loaders()
         >>> CombinedLoader.parse("module://os&file://path/to/file.py")
-        CombinedLoader(loaders=[ModuleLoader(module_name='os'), FileLoader(path=PurePosixPath('path/to/file.py'))])
+        CombinedLoader(loaders=[ModuleLoader(module_name='os'), FileLoader(path=PosixPath('path/to/file.py'))])
 
         >>> CombinedLoader.parse("?loader=module://os&loader=entrypoint://.*")
         CombinedLoader(loaders=[ModuleLoader(module_name='os'), EntryPointsLoader(groups=('.*',))])
@@ -287,7 +287,7 @@ class CombinedLoader(PluginLoader):
         resolved_self = dataclasses.replace(self, loaders=resolved_loaders)
         return (resolved_self,)
 
-    def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
+    def find_paths(self, *, pattern: str) -> Iterator[FoundPath]:
         """
         Finds paths from all underlying loaders.
 
@@ -298,7 +298,7 @@ class CombinedLoader(PluginLoader):
         True
         """
         for loader in self.loaders:
-            yield from loader.find_paths(pattern=pattern, basedir=basedir)
+            yield from loader.find_paths(pattern=pattern)
 
     def find_types(
         self,
@@ -306,7 +306,6 @@ class CombinedLoader(PluginLoader):
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Finds types from all underlying loaders.
@@ -319,7 +318,7 @@ class CombinedLoader(PluginLoader):
         True
         """
         for loader in self.loaders:
-            yield from loader.find_types(t, pattern=pattern, match=match, predicate=predicate)
+            yield from loader.find_types(t, pattern=pattern, match=match)
 
     def find_objects(
         self,
@@ -327,7 +326,6 @@ class CombinedLoader(PluginLoader):
         *,
         pattern: str,
         match: Optional[Matcher[T]] = None,
-        predicate: Optional[Predicate[T]] = None,
     ) -> Iterator[FoundObject[T]]:
         """
         Finds objects from all underlying loaders.
@@ -339,7 +337,7 @@ class CombinedLoader(PluginLoader):
         True
         """
         for loader in self.loaders:
-            yield from loader.find_objects(t, pattern=pattern, match=match, predicate=predicate)
+            yield from loader.find_objects(t, pattern=pattern, match=match)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -475,9 +473,7 @@ class ImplementationLoader(PluginLoader):
         """
         return iter(())
 
-    def find_objects(
-        self, t: type[T], *, pattern: str, match: Optional[Matcher[T]] = None, predicate: Optional[Predicate[T]] = None
-    ) -> Iterator[FoundObject[T]]:
+    def find_objects(self, t: type[T], *, pattern: str, match: Optional[Matcher[T]] = None) -> Iterator[FoundObject[T]]:
         """
         Always empty because this loader is just for classes.
         """
@@ -489,7 +485,6 @@ class ImplementationLoader(PluginLoader):
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Finds implementations from all underlying groups.
@@ -508,9 +503,6 @@ class ImplementationLoader(PluginLoader):
 
             if match is not None and not match(cls):
                 continue
-            if predicate is not None and not predicate(cls):
-                continue
-
             yield FoundType(uri=typename, type=cls, pattern=pattern, loader=self)
 
 

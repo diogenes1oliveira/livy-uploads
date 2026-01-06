@@ -48,7 +48,6 @@ class ModuleLoaderMixIn:
         *,
         pattern: str,
         match: Optional[Matcher[T]] = None,
-        predicate: Optional[Predicate[T]] = None,
     ) -> Iterator[FoundObject[T]]:
         """
         Imports the module and scans it for the matching declared objects.
@@ -64,7 +63,7 @@ class ModuleLoaderMixIn:
         module = importlib.import_module(self.module_name)
         loader = cast(PluginLoader, self)
 
-        for name, obj in scan_module(module, pattern=pattern, matcher=matcher, predicate=predicate):
+        for name, obj in scan_module(module, pattern=pattern, matcher=matcher):
             uri = loader.named_uri(name)
             yield FoundObject(object=obj, uri=uri, pattern=pattern, loader=loader)
 
@@ -74,7 +73,6 @@ class ModuleLoaderMixIn:
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Imports the module and scans it for the matching class definitions.
@@ -90,7 +88,7 @@ class ModuleLoaderMixIn:
         module = importlib.import_module(self.module_name)
         loader = cast(PluginLoader, self)
 
-        for name, cls in scan_module(module, pattern=pattern, matcher=matcher, predicate=predicate):
+        for name, cls in scan_module(module, pattern=pattern, matcher=matcher):
             uri = loader.named_uri(name)
             yield FoundType(type=cls, uri=uri, pattern=pattern, loader=loader)
 

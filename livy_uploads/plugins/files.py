@@ -1,6 +1,5 @@
 __all__ = (
     "FileLoader",
-    "FileLoaderMixIn",
     "scan_paths",
 )
 
@@ -19,38 +18,8 @@ T = TypeVar("T")
 LOGGER = logging.getLogger(__name__)
 
 
-class FileLoaderMixIn:
-    """
-    Mixin for plugin loaders that can load files from a local path.
-    """
-
-    path: PurePosixPath
-    "Path to the code file. Should be a .py, .zip or .egg file."
-
-    def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
-        """
-        Scans the file's directory for the matching relative paths.
-
-        >>> (loader,) = FileLoader.parse(__file__).resolve()
-
-        >>> exact_filename_uris = sorted([f.uri for f in loader.find_paths(pattern="files.py")])  # doctest: +ELLIPSIS
-        >>> exact_filename_uris  # doctest: +ELLIPSIS
-        ['file://.../plugins/files.py/files.py']
-
-        >>> partial_filename_uris = sorted([f.uri for f in loader.find_paths(pattern="*.py")])
-        >>> len(partial_filename_uris) > 0
-        True
-        >>> any('files.py' in uri for uri in partial_filename_uris)
-        True
-        """
-        loader = cast(PluginLoader, self)
-        for filename, path in scan_paths(self.path, pattern=pattern):
-            uri = loader.named_uri(filename)
-            yield FoundPath(path=path, uri=uri, pattern=pattern, loader=loader)
-
-
 @dataclasses.dataclass(frozen=True)
-class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
+class FileLoader(NoCodeMixin, PluginLoader):
     """
     Loads plugins from a local path.
     """
@@ -59,8 +28,7 @@ class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
     __impl_priority__: ClassVar[int] = 20  # explicit priority (can be auto-detected), higher than ModuleLoader
     __impl_tags__: ClassVar[tuple[str, ...]] = ("file:",)
 
-    path: PurePosixPath
-    "Path to the file or directory."
+    path: Optional[Path] = None
 
     @classmethod
     def parse(cls, value: Union[str, Path, PurePosixPath]) -> Self:
@@ -72,10 +40,10 @@ class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
                 If a spec, must have at least one `/` separator.
 
         >>> FileLoader.parse("path/to/plugin.py")
-        FileLoader(path=PurePosixPath('path/to/plugin.py'))
+        FileLoader(path=PosixPath('path/to/plugin.py'))
 
         >>> FileLoader.parse("path/to/my-plugin.py")
-        FileLoader(path=PurePosixPath('path/to/my-plugin.py'))
+        FileLoader(path=PosixPath('path/to/my-plugin.py'))
 
         >>> FileLoader.parse("plugin.py")
         Traceback (most recent call last):
@@ -91,7 +59,7 @@ class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
         else:
             path = value
 
-        return cls(path=path)
+        return cls(path=Path(path))
 
     def named_uri(self, name: Optional[str]) -> str:
         """
@@ -120,18 +88,42 @@ class FileLoader(FileLoaderMixIn, NoCodeMixin, PluginLoader):
 
         >>> (resolved_loader,) = FileLoader.parse(__file__).resolve()  # doctest: +ELLIPSIS
         >>> resolved_loader  # doctest: +ELLIPSIS
-        FileLoader(path=PurePosixPath('.../plugins/files.py'))
+        FileLoader(path=PosixPath('.../plugins/files.py'))
 
         >>> assert resolved_loader.path.is_absolute()
 
         """
         basedir = basedir or Path.cwd()
+        assert self.path is not None, f".path not set in {self} for some reason"
+
         if not self.path.is_absolute():
             setup_path = Path(PurePosixPath(basedir.as_posix()) / self.path)
         else:
             setup_path = Path(self.path)
 
-        return (dataclasses.replace(self, path=PurePosixPath(setup_path.as_posix())),)
+        return ((dataclasses.replace(self, path=setup_path)),)
+
+    def find_paths(self, *, pattern: str) -> Iterator[FoundPath]:
+        """
+        Scans the file's directory for the matching relative paths.
+
+        >>> (loader,) = FileLoader.parse(__file__).resolve()
+
+        >>> exact_filename_uris = sorted([f.uri for f in loader.find_paths(pattern="files.py")])  # doctest: +ELLIPSIS
+        >>> exact_filename_uris  # doctest: +ELLIPSIS
+        ['file://.../plugins/files.py/files.py']
+
+        >>> partial_filename_uris = sorted([f.uri for f in loader.find_paths(pattern="*.py")])
+        >>> len(partial_filename_uris) > 0
+        True
+        >>> any('files.py' in uri for uri in partial_filename_uris)
+        True
+        """
+        assert self.path is not None, f".path not resolved in {self} yet"
+        loader = cast(PluginLoader, self)
+        for filename, path in scan_paths(self.path, pattern=pattern):
+            uri = loader.named_uri(filename)
+            yield FoundPath(path=path, uri=uri, pattern=pattern, loader=loader)
 
 
 def scan_paths(file_or_dir_path: Union[Path, PurePosixPath], *, pattern: str) -> Iterator[tuple[str, Path]]:

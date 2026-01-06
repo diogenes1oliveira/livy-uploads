@@ -224,7 +224,6 @@ class EntryPointsLoader(PluginLoader):
         *,
         pattern: str,
         match: Optional[Matcher[T]] = None,
-        predicate: Optional[Predicate[T]] = None,
     ) -> Iterator[FoundObject[T]]:
         """
         Loads entrypoints and scans them for matching objects.
@@ -237,9 +236,7 @@ class EntryPointsLoader(PluginLoader):
         assert self.entry_points is not None
         matcher = match or Matcher.instance(t)
 
-        for name, obj, _entry_point in scan_entrypoints(
-            self.entry_points, pattern=pattern, matcher=matcher, predicate=predicate
-        ):
+        for name, obj, _entry_point in scan_entrypoints(self.entry_points, pattern=pattern, matcher=matcher):
             uri = self.named_uri(name)
             yield FoundObject(object=obj, uri=uri, pattern=pattern, loader=self)
 
@@ -249,7 +246,6 @@ class EntryPointsLoader(PluginLoader):
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Loads entrypoints and scans them for matching class definitions.
@@ -265,9 +261,7 @@ class EntryPointsLoader(PluginLoader):
         assert self.entry_points is not None
         matcher = match or Matcher.subclass(t)
 
-        for name, cls, entry_point in scan_entrypoints(
-            self.entry_points, pattern=pattern, matcher=matcher, predicate=predicate
-        ):
+        for name, cls, entry_point in scan_entrypoints(self.entry_points, pattern=pattern, matcher=matcher):
             if name:
                 name = entry_point.name + "#" + name
             else:
@@ -325,7 +319,7 @@ def scan_entrypoints(
         # If it's a module, scan it
         if inspect.ismodule(value):
             module = value
-            for name, obj in scan_module(module, pattern=pattern, matcher=matcher, predicate=predicate):
+            for name, obj in scan_module(module, pattern=pattern, matcher=matcher):
                 yield name, obj, entry_point
         # If it's a direct value (class or object)
         elif matcher(value):

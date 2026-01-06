@@ -30,7 +30,7 @@ def constants_(compact: bool) -> None:
 def list_(project: Project, format: Optional[str], no_resolve: Optional[bool] = None) -> None:
     "List the configured plugin loaders"
 
-    LOGGER.debug("using APPNAME=%s", constants.APPNAME)
+    LOGGER.debug("using APPNAME=%s", constants.PROJECT_APPNAME)
 
     if no_resolve:
         project.initialize()

@@ -11,7 +11,8 @@ from livy_uploads.cli.__main__ import cli
 
 
 @pytest.fixture(autouse=True)
-def setup_env(monkeypatch: pytest.MonkeyPatch):
+def setup_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ensure plugins are loaded from the test environment
     monkeypatch.setenv("SPARKRL_PLUGINS", "!file://./")
 
 
@@ -37,6 +38,21 @@ def setup_env(monkeypatch: pytest.MonkeyPatch):
                 "impl://sparkrl.plugins.patches",
             ],
         ),
+    ],
+)
+def test_plugins_list(args, expected_lines):
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli, args=["plugins", *args])
+
+    assert result.exit_code == 0, result.output
+
+    output_lines = result.stdout.strip().splitlines()
+    assert output_lines == expected_lines
+
+
+@pytest.mark.parametrize(
+    ["args", "expected_lines"],
+    [
         (
             ("impls", "--format=compact"),
             [
@@ -57,7 +73,7 @@ def setup_env(monkeypatch: pytest.MonkeyPatch):
         ),
     ],
 )
-def test_plugins_cli(args, expected_lines):
+def test_plugins_impls(args, expected_lines):
     runner = CliRunner(mix_stderr=False)
     result = runner.invoke(cli, args=["plugins", *args])
 
@@ -67,22 +83,7 @@ def test_plugins_cli(args, expected_lines):
     assert output_lines == expected_lines
 
 
-def test_plugins_constants():
-    runner = CliRunner(mix_stderr=False)
-    result = runner.invoke(cli, args=["plugins", "constants"])
-
-    assert result.exit_code == 0, result.output
-
-    actual = json.loads(result.stdout)
-    assert actual == {
-        "APPNAME": "sparkrl",
-        "PLUGINS_ENV": "SPARKRL_PLUGINS",
-        "GROUP_PREFIX": "sparkrl.plugins.",
-        "LOADERS_GROUP": "sparkrl.plugins.loaders",
-    }
-
-
-def test_plugins_impls():
+def test_plugins_one_impl():
     runner = CliRunner(mix_stderr=False)
     result = runner.invoke(cli, args=["plugins", "impls", "--format=json"])
 
@@ -95,6 +96,22 @@ def test_plugins_impls():
         "name": "SessionCommand",
         "type": "interface",
         "group": "sparkrl.plugins.commands",
+    }
+
+
+def test_plugins_constants():
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli, args=["plugins", "constants"])
+
+    assert result.exit_code == 0, result.output
+
+    actual = json.loads(result.stdout)
+    assert actual == {
+        "PROJECT_APPNAME": "sparkrl",
+        "PLUGINS_ENV": "SPARKRL_PLUGINS",
+        "PROFILES_ENV": "SPARKRL_PROFILES",
+        "GROUP_PREFIX": "sparkrl.plugins.",
+        "LOADERS_GROUP": "sparkrl.plugins.loaders",
     }
 
 

@@ -164,7 +164,7 @@ class Loader(Protocol):
     """
 
     @abstractmethod
-    def find_paths(self, *, pattern: str, basedir: Optional[Path] = None) -> Iterator[FoundPath]:
+    def find_paths(self, *, pattern: str) -> Iterator[FoundPath]:
         """
         Finds relative paths that match the pattern.
         """
@@ -177,7 +177,6 @@ class Loader(Protocol):
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Finds class definitions that match the pattern.
@@ -191,7 +190,6 @@ class Loader(Protocol):
         *,
         pattern: str,
         match: Optional[Matcher[T]] = None,
-        predicate: Optional[Predicate[T]] = None,
     ) -> Iterator[FoundObject[T]]:
         """
         Finds objects that match the pattern.
@@ -297,7 +295,6 @@ class NoCodeMixin:
         *,
         pattern: str,
         match: Optional[Matcher[T]] = None,
-        predicate: Optional[Predicate[T]] = None,
     ) -> Iterator[FoundObject[T]]:
         """
         Always returns an empty iterator: this loader does not support executing code.
@@ -311,7 +308,6 @@ class NoCodeMixin:
         *,
         pattern: str,
         match: Optional[Matcher[type[T]]] = None,
-        predicate: Optional[Predicate[type[T]]] = None,
     ) -> Iterator[FoundType[T]]:
         """
         Always returns an empty iterator: this loader does not support executing code.
