@@ -1,7 +1,6 @@
 from abc import abstractmethod
 from typing import Any, ClassVar, Iterable, Literal, Mapping, Optional, Protocol, TypeVar, overload
 
-from livy_uploads.configs.base import Configurable
 from livy_uploads.plugins.impls import Implementation
 
 NO_DEFAULT: Any = object()
@@ -71,7 +70,7 @@ class Converter(Protocol):
     def get_type_by_name(self, typename: str) -> type:
         raise NotImplementedError
 
-    def register_typename(self, t: type, typename: str) -> None:
+    def register_typename(self, t: type, typename: Optional[str] = None) -> None:
         raise NotImplementedError
 
 

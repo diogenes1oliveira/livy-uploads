@@ -12,7 +12,11 @@ LOGGER = logging.getLogger(__name__)
 
 def resolve_path_or_content(
     value: Union[str, Path, PurePosixPath],
-    mode: Literal["binary", "text"],
+    mode: Literal[
+        "binary",
+        "text",
+        "path",
+    ],
     filename: str,
     t: type[P],
     basedir: Path,
@@ -29,7 +33,7 @@ def resolve_path_or_content(
     The resolution logic depends on the input `value` and the `mode` parameter.
 
     1. **Path Resolution**:
-       If `value` is a `Path` object, or a string containing "/" within the first 3 characters,
+       If `mode` is "path", or `value` is a `Path` object, or a string containing "/" within the first 3 characters,
        it is treated as a file path.
        - Absolute paths are returned as-is.
        - Relative paths are resolved relative to `basedir`.
@@ -49,10 +53,12 @@ def resolve_path_or_content(
          - **Prefix 'base64:'**: The suffix is decoded as base64 data.
          - **Raw string**: The string is encoded as UTF-8 directly.
     """
-    if mode not in ("binary", "text"):
+    if mode not in ("binary", "text", "path"):
         raise ValueError(f"unknown mode {mode!r}")
 
-    if isinstance(value, str) and "/" in value[:3]:
+    if mode == "path":
+        value = t(value)
+    elif isinstance(value, str) and "/" in value[:3]:
         # guessing as a path
         value = t(value)
 
@@ -84,12 +90,16 @@ def resolve_path_or_content(
     return t(cache_path)
 
 
-def get_path_resolve_annotation(t: type) -> Optional[tuple[Literal["binary", "text"], str]]:
+def get_path_resolve_annotation(
+    t: type,
+) -> Optional[tuple[Literal["binary", "text", "path"], str]]:
     """
     >>> get_path_resolve_annotation(Annotated[Path, "sparkrl.resolve=path-or-data"])
     ('binary', '')
     >>> get_path_resolve_annotation(Annotated[PurePosixPath, "sparkrl.resolve=path-or-text"])
     ('text', '')
+    >>> get_path_resolve_annotation(Annotated[Path, "sparkrl.resolve=path"])
+    ('path', '')
     >>> get_path_resolve_annotation(Annotated[PurePosixPath, "sparkrl.resolve=path-or-data:{uuid}.keytab"])
     ('binary', '{uuid}.keytab')
     >>> get_path_resolve_annotation(Annotated[Path, "other.annotation=value"]) is None
@@ -128,5 +138,7 @@ def get_path_resolve_annotation(t: type) -> Optional[tuple[Literal["binary", "te
         return "binary", name
     elif resolve == "path-or-text":
         return "text", name
+    elif resolve == "path":
+        return "path", name
     else:
         raise TypeError(f"Unknown sparkrl.resolve={resolve!r} annotation in {t}")

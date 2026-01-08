@@ -1,1 +1,3 @@
+__all__ = ("BASEDIR_ENV",)
+
 BASEDIR_ENV = "PROJECT_BASEDIR"

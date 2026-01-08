@@ -35,10 +35,12 @@ infos = "livy_uploads.commands.infos"
 
 [project.entry-points."sparkrl.plugins.configurables"]
 base = "livy_uploads.configs.base:Configurable"
+sparkmagic = "livy_uploads.magics.sparkmagic"
 
 [project.entry-points."sparkrl.plugins.converters"]
 base = "livy_uploads.converters.base:ConverterCustomizer"
 primitives = "livy_uploads.converters.primitives"
+models = "livy_uploads.models.converters"
 
 [project.entry-points."sparkrl.plugins.patches"]
 base = "livy_uploads.patches.base:Patch"

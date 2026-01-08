@@ -297,4 +297,7 @@ class ConfigFileLoader(ProfileFileLoader, Configurable):
         assert self.converter is not None, "converter not set yet"
         assert self.raw_configs is not None, "raw configs not set yet"
 
-        return self.converter(raw=self.raw_configs, keys=keys, t=t, nullable=nullable, default=default)  # type: ignore
+        if nullable is not None:
+            return self.converter(raw=self.raw_configs, keys=keys, t=t, nullable=nullable)  # type: ignore
+        else:
+            return self.converter(raw=self.raw_configs, keys=keys, t=t, default=default)  # type: ignore

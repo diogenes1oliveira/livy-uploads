@@ -1,3 +1,10 @@
+__all__ = (
+    "TaskInfo",
+    "JobSummary",
+    "JobInfo",
+    "AttemptInfo",
+)
+
 import dataclasses
 from typing import Optional
 

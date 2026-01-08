@@ -1,8 +1,10 @@
 import dataclasses
+import json
 import logging
 import os
+import shlex
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Mapping, Optional
 
 from dotenv import dotenv_values
 from typing_extensions import Self
@@ -146,3 +148,88 @@ class EnvFileLoader(ProfileFileLoader, Configurable):
             LOGGER.debug("overriden environment variables: %s", " ".join(sorted(applied_envs)))
 
         return found_paths
+
+    def save_envs(
+        self,
+        updates: Mapping[str, Optional[str]],
+        quote: Literal["shell", "none", "json", "auto"] = "auto",
+    ) -> None:
+        """
+        Saves or replaces the environment variables in the first .env file in the list of default basenames.
+
+        Args:
+            updates: A mapping of environment variable names to their values. `None` values will be removed.
+        """
+
+        assert self.basedir is not None, ".basedir not resolved yet"
+
+        try:
+            filename = self.default_basenames[0]
+        except IndexError:
+            raise ValueError("no default basenames to save envs to") from None
+
+        path = self.basedir / filename
+        if not path.exists():
+            path.touch(0o600)
+        path.chmod(0o600)
+
+        updates = dict(updates)
+
+        content = path.read_text()
+        new_lines = []
+        for line in content.splitlines():
+            name, sep, _ = line.partition("=")
+            if not name or not sep:
+                new_lines.append(line)
+                continue
+            try:
+                update = updates.pop(name)
+            except KeyError:
+                # non-matching lines are kept as-is
+                new_lines.append(line)
+                continue
+
+            if update is None:
+                # explicit deletion of a variable
+                continue
+
+            new_lines.append(f"{name}={env_quote(update, quote=quote)}")
+
+        # add in the non-popped updates
+        if updates:
+            for name, value in updates.items():
+                if value is None:
+                    continue
+                new_lines.append(f"{name}={env_quote(value, quote=quote)}")
+
+        path.write_text("\n".join(new_lines))
+
+
+def env_quote(value: str, quote: Literal["shell", "none", "json", "auto"]) -> str:
+    r"""
+    >>> [env_quote("foo", quote="shell"), env_quote("foo bar", quote="shell")]
+    ['foo', "'foo bar'"]
+    >>> [env_quote("foo", quote="json"), env_quote("foo bar", quote="json")]
+    ['"foo"', '"foo bar"']
+    >>> [env_quote("foo", quote="none"), env_quote("foo bar", quote="none")]
+    ['foo', 'foo bar']
+    >>> [env_quote("foo", quote="auto"), env_quote("foo bar", quote="auto")]
+    ['"foo"', '"foo bar"']
+    """
+    if quote == "auto":
+        dumped = json.dumps(value)
+        if dumped == value:
+            quote = "none"
+        else:
+            quote = "json"
+
+    if quote == "shell":
+        return shlex.quote(value)
+    elif quote == "json":
+        return json.dumps(value)
+    elif quote == "none":
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"value {value!r} contains newline or carriage return characters")
+        return value
+    else:
+        raise ValueError(f"invalid quote mode {quote!r}")

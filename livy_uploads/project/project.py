@@ -1,5 +1,6 @@
 __all__ = ("Project",)
 
+import contextvars
 import functools
 import logging
 from pathlib import Path
@@ -7,17 +8,20 @@ from typing import Any, ClassVar, Optional
 
 from typing_extensions import Self
 
+from livy_uploads.configs.base import Configurable
 from livy_uploads.configs.configfiles import ConfigFileLoader
 from livy_uploads.configs.envs import EnvFileLoader
 from livy_uploads.configs.logs import LoggingConfigurator
 from livy_uploads.converters.base import Converter, ConverterCustomizer
 from livy_uploads.converters.cattrs import CattrsConverter
 from livy_uploads.plugins import ImplementationLoader
-from livy_uploads.plugins.impls import get_implementations
+from livy_uploads.plugins.impls import get_implementation, get_implementations
 from livy_uploads.project.basedir import find_basedir
 from livy_uploads.project.loader import GlobalEnvLoader
 
 LOGGER = logging.getLogger(__name__)
+
+_configuring = contextvars.ContextVar("configuring", default=False)
 
 
 class Project:
@@ -45,6 +49,15 @@ class Project:
     @functools.cached_property
     def cachedir(self) -> Path:
         return self.basedir / "var" / "cache"
+
+    @functools.cached_property
+    def configurables(self) -> list[Configurable]:
+        """
+        Returns the list of enabled configurables in the config.
+        """
+        names = self.configs.get(["configurables"], t=list[str], nullable=True) or []
+        LOGGER.debug("instantiating configurables: %s", names)
+        return [get_implementation(Configurable, typename=name)() for name in names]
 
     @classmethod
     def get(cls) -> "Project":
@@ -81,15 +94,20 @@ class Project:
         if not self._initialized:
             self.initialize()
 
-        self._loader.resolve(basedir=self.basedir)
-        self.envs.setup()
-        self.logs.setup()  # again now after loading the .env
+        _configuring.set(True)
+        try:
+            self.envs.setup()
+            self.logs.setup()  # again now after loading the .env
 
-        self._configure_converter()
+            self._configure_converter()
 
-        self.configs.setup()
+            self.configs.setup()
 
-        self._configured = True
+            self._setup_configurables()
+            self._configured = True
+        finally:
+            _configuring.set(False)
+
         return self
 
     @functools.cached_property
@@ -135,13 +153,16 @@ class Project:
         """
         self.logs.setup()
         self._loader.setup()
+        (self._loader,) = self._loader.resolve(basedir=self.basedir)
         self._initialized = True
 
     def _assert_initialized(self) -> None:
         assert self._initialized, "Project not initialized yet. Call `Project.initialize()` at your entrypoint."
 
     def _assert_configured(self) -> None:
-        assert self._configured, "Project not configured yet. Call `Project.setup()` after loading."
+        assert (
+            self._configured or _configuring.get()
+        ), "Project not configured yet. Call `Project.setup()` after loading."
 
     def _configure_converter(self) -> None:
         self._converter.setup()
@@ -152,3 +173,8 @@ class Project:
             self._converter = customizer.customize_converter(self._converter)
 
         self.configs.set_converter(self._converter)
+
+    def _setup_configurables(self) -> None:
+        for configurable in self.configurables:
+            LOGGER.debug("setting up configurable %r (class %r)", configurable.impl_typename(), configurable.__class__)
+            configurable.setup()

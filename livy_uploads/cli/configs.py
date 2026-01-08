@@ -40,6 +40,7 @@ def get(project: Project, key: str, typename: Optional[str] = None) -> None:
         try:
             t = project.converter.get_type_by_name(typename)
         except KeyError:
+            breakpoint()
             click.echo(f"Type {typename!r} not found", err=True)
             raise click.Abort()
     else:

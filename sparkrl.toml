@@ -1,3 +1,4 @@
+configurables = ["SparkMagicConfigurator"]
 
 [uv.kernel]
 name = "Sparkrl+uv"

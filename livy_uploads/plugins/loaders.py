@@ -31,6 +31,7 @@ from livy_uploads.plugins.impls import (
 )
 from livy_uploads.plugins.modules import ModuleLoader
 from livy_uploads.plugins.utils import resolve_group, split_name_attr
+from livy_uploads.utils.typeutils import is_actual_subclass
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -470,8 +471,9 @@ class ImplementationLoader(PluginLoader):
             for entrypoint_loader in EntryPointsLoader(groups=(loader.group,)).resolve():
                 LOGGER.debug("scanning loader %s", entrypoint_loader.uri)
                 for found in entrypoint_loader.find_types(object, pattern="*"):
-                    impl = cast(type[Implementation], found.type)
-                    to_register[impl] = found.uri
+                    if not is_actual_subclass(found.type, Implementation):
+                        continue
+                    to_register[cast(type[Implementation], found.type)] = found.uri
 
             LOGGER.debug(
                 "registering %d classes for group %s from loader %s: %s",

@@ -38,8 +38,8 @@ class CattrsConverter(Converter, Configurable):
     def get_type_by_name(self, typename: str) -> type:
         return self.typenames[typename]
 
-    def register_typename(self, t: type, typename: str) -> None:
-        self.typenames[typename] = t
+    def register_typename(self, t: type, typename: Optional[str] = None) -> None:
+        self.typenames[typename or t.__name__] = t
 
     # When type T is provided
     @overload
