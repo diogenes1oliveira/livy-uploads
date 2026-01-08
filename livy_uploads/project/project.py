@@ -21,8 +21,6 @@ from livy_uploads.project.loader import GlobalEnvLoader
 
 LOGGER = logging.getLogger(__name__)
 
-_configuring = contextvars.ContextVar("configuring", default=False)
-
 
 class Project:
     """
@@ -34,13 +32,20 @@ class Project:
     def __new__(cls, *args: Any, **kwargs: Any) -> "Project":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            cls._instance.__post_init__()
         return cls._instance
 
     def __init__(self) -> None:
+        self._initialized: bool
+        self._configured: bool
+        self._loader: GlobalEnvLoader
+        self._converter: Converter
+
+    def __post_init__(self) -> None:
         self._initialized = False
         self._configured = False
         self._loader = GlobalEnvLoader()
-        self._converter: Converter = CattrsConverter()
+        self._converter = CattrsConverter()
 
     @functools.cached_property
     def basedir(self) -> Path:
@@ -94,20 +99,16 @@ class Project:
         if not self._initialized:
             self.initialize()
 
-        _configuring.set(True)
-        try:
-            self.envs.setup()
-            self.logs.setup()  # again now after loading the .env
+        (self._loader,) = self._loader.resolve(basedir=self.basedir)
+        self.envs.setup()
+        self.logs.setup()  # again now after loading the .env
 
-            self._configure_converter()
+        self._configure_converter()
 
-            self.configs.setup()
+        self.configs.setup()
+        self._configured = True
 
-            self._setup_configurables()
-            self._configured = True
-        finally:
-            _configuring.set(False)
-
+        self._setup_configurables()
         return self
 
     @functools.cached_property
@@ -153,16 +154,13 @@ class Project:
         """
         self.logs.setup()
         self._loader.setup()
-        (self._loader,) = self._loader.resolve(basedir=self.basedir)
         self._initialized = True
 
     def _assert_initialized(self) -> None:
         assert self._initialized, "Project not initialized yet. Call `Project.initialize()` at your entrypoint."
 
     def _assert_configured(self) -> None:
-        assert (
-            self._configured or _configuring.get()
-        ), "Project not configured yet. Call `Project.setup()` after loading."
+        assert self._configured, "Project not configured yet. Call `Project.setup()` after loading."
 
     def _configure_converter(self) -> None:
         self._converter.setup()
