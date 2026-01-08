@@ -46,5 +46,5 @@ ttl = "10m"
 conf_dir = "${SPARKMAGIC_CONF_DIR:-.dev/conf/sparkmagic}"
 ".include" = [".dev/conf/sparkmagic/config.yaml"]
 
-[sparkmagic.session_configs]
+[sparkmagic.session_configs_defaults]
 ".include" = ["#/session_configs"]
