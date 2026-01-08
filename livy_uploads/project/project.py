@@ -1,13 +1,21 @@
 __all__ = ("Project",)
 
+import functools
 import logging
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from typing_extensions import Self
 
+from livy_uploads.configs.configfiles import ConfigFileLoader
+from livy_uploads.configs.envs import EnvFileLoader
 from livy_uploads.configs.logs import LoggingConfigurator
+from livy_uploads.converters.base import Converter, ConverterCustomizer
+from livy_uploads.converters.cattrs import CattrsConverter
 from livy_uploads.plugins import ImplementationLoader
-from livy_uploads.project_new.loader import GlobalEnvLoader
+from livy_uploads.plugins.impls import get_implementations
+from livy_uploads.project.basedir import find_basedir
+from livy_uploads.project.loader import GlobalEnvLoader
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +36,15 @@ class Project:
         self._initialized = False
         self._configured = False
         self._loader = GlobalEnvLoader()
-        self._logging_configurator = LoggingConfigurator()
+        self._converter: Converter = CattrsConverter()
+
+    @functools.cached_property
+    def basedir(self) -> Path:
+        return find_basedir()
+
+    @functools.cached_property
+    def cachedir(self) -> Path:
+        return self.basedir / "var" / "cache"
 
     @classmethod
     def get(cls) -> "Project":
@@ -65,12 +81,19 @@ class Project:
         if not self._initialized:
             self.initialize()
 
-        self._loader.resolve()
+        self._loader.resolve(basedir=self.basedir)
+        self.envs.setup()
+        self.logs.setup()  # again now after loading the .env
+
+        self._configure_converter()
+
+        self.configs.setup()
+
         self._configured = True
         return self
 
-    @property
-    def impls(self) -> tuple[ImplementationLoader, ...]:
+    @functools.cached_property
+    def impls(self) -> ImplementationLoader:
         self._assert_configured()
 
         loaders = list[ImplementationLoader]()
@@ -81,8 +104,28 @@ class Project:
         if not loaders:
             raise ValueError("No implementation loader found")
 
-        return tuple(loaders)
-        # return ImplementationLoader(groups=())
+        return ImplementationLoader.merge(loaders)
+
+    @functools.cached_property
+    def envs(self) -> EnvFileLoader:
+        self._assert_initialized()
+        (loader,) = EnvFileLoader().resolve(basedir=self.basedir)
+        return loader
+
+    @functools.cached_property
+    def logs(self) -> LoggingConfigurator:
+        return LoggingConfigurator()
+
+    @functools.cached_property
+    def configs(self) -> ConfigFileLoader:
+        self._assert_initialized()
+        (loader,) = ConfigFileLoader().resolve(basedir=self.basedir)
+        return loader
+
+    @property
+    def converter(self) -> Converter:
+        self._assert_configured()
+        return self._converter
 
     def initialize(self) -> None:
         """
@@ -90,7 +133,7 @@ class Project:
 
         You should prefer invoking `Project.setup()` directly instead.
         """
-        self._logging_configurator.setup()
+        self.logs.setup()
         self._loader.setup()
         self._initialized = True
 
@@ -99,3 +142,13 @@ class Project:
 
     def _assert_configured(self) -> None:
         assert self._configured, "Project not configured yet. Call `Project.setup()` after loading."
+
+    def _configure_converter(self) -> None:
+        self._converter.setup()
+
+        for name, customizer_cls in get_implementations(ConverterCustomizer, pattern="*").items():
+            LOGGER.debug("applying customizer %r (class %r)", name, customizer_cls)
+            customizer = customizer_cls()
+            self._converter = customizer.customize_converter(self._converter)
+
+        self.configs.set_converter(self._converter)

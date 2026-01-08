@@ -24,6 +24,9 @@ GROUP_PREFIX: str
 LOADERS_GROUP: str
 "The entrypoint group name for the loaders. Defaults to `sparkrl.plugins.loaders`"
 
+PACKAGE_NAME: str
+"The top-level name of this package."
+
 
 def as_json() -> dict[str, str]:
     """
@@ -42,7 +45,7 @@ def reload() -> None:
     """
     Reload the constants.
     """
-    global PROJECT_APPNAME, GROUP_PREFIX, PLUGINS_ENV, PROFILES_ENV, LOADERS_GROUP
+    global PROJECT_APPNAME, GROUP_PREFIX, PLUGINS_ENV, PROFILES_ENV, LOADERS_GROUP, PACKAGE_NAME
 
     # TODO: once I rename the whole project
     # APPNAME = os.environ.get(APPNAME_ENV) or __name__.partition(".")[0]
@@ -51,6 +54,7 @@ def reload() -> None:
     PLUGINS_ENV = f"{PROJECT_APPNAME.upper()}_PLUGINS"
     PROFILES_ENV = f"{PROJECT_APPNAME.upper()}_PROFILES"
     LOADERS_GROUP = GROUP_PREFIX + "loaders"
+    PACKAGE_NAME = __name__.partition(".")[0]
 
 
 reload()

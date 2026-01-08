@@ -36,6 +36,10 @@ infos = "livy_uploads.commands.infos"
 [project.entry-points."sparkrl.plugins.configurables"]
 base = "livy_uploads.configs.base:Configurable"
 
+[project.entry-points."sparkrl.plugins.converters"]
+base = "livy_uploads.converters.base:ConverterCustomizer"
+primitives = "livy_uploads.converters.primitives"
+
 [project.entry-points."sparkrl.plugins.patches"]
 base = "livy_uploads.patches.base:Patch"
 sparkmagic_reload = "livy_uploads.patches.sparkmagic:SparkMagicReloadPatch"

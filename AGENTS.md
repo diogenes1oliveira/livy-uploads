@@ -61,3 +61,11 @@ Ask the user: "Should I keep this simple or would you like me to expand on it?"
 - Run the related tests to verify no regressions
 - Delete any old/unused files
 - No need to create usage example scripts.
+
+## Safe Commands
+
+The following commands are whitelisted and should be auto-run (SafeToAutoRun=true):
+- uv run pytest *
+- uv run black *
+- uv run mypy *
+- uv run ruff *

@@ -19,7 +19,7 @@ DEFAULT_FILE_LOADER = "file://./"
 
 class GlobalEnvLoader(CombinedLoader):
     """
-    A global loader for the whole app that uses the `APPNAME_PLUGINS` environment variable.
+    A global loader for the whole app that uses the `{APPNAME}_PLUGINS` environment variable.
     """
 
     def __init__(self) -> None:

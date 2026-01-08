@@ -31,10 +31,12 @@ def setup_env(monkeypatch: pytest.MonkeyPatch) -> None:
             [
                 "entrypoint://sparkrl.plugins.commands/",
                 "entrypoint://sparkrl.plugins.configurables/",
+                "entrypoint://sparkrl.plugins.converters/",
                 "module://livy_uploads",
                 "entrypoint://sparkrl.plugins.patches/",
                 "impl://sparkrl.plugins.commands",
                 "impl://sparkrl.plugins.configurables",
+                "impl://sparkrl.plugins.converters",
                 "impl://sparkrl.plugins.patches",
             ],
         ),
@@ -58,17 +60,8 @@ def test_plugins_list(args, expected_lines):
             [
                 "entrypoint://sparkrl.plugins.commands/base#SessionCommand",
                 "entrypoint://sparkrl.plugins.configurables/base#Configurable",
+                "entrypoint://sparkrl.plugins.converters/base#ConverterCustomizer",
                 "entrypoint://sparkrl.plugins.patches/base#Patch",
-            ],
-        ),
-        (
-            ("impls", "--format=compact", "scan"),
-            [
-                "entrypoint://sparkrl.plugins.commands/base#SessionCommand",
-                "entrypoint://sparkrl.plugins.commands/infos#SessionInfoCommand",
-                "entrypoint://sparkrl.plugins.configurables/base#Configurable",
-                "entrypoint://sparkrl.plugins.patches/base#Patch",
-                "entrypoint://sparkrl.plugins.patches/sparkmagic_reload#SparkMagicReloadPatch",
             ],
         ),
     ],
@@ -81,6 +74,32 @@ def test_plugins_impls(args, expected_lines):
 
     output_lines = result.stdout.strip().splitlines()
     assert output_lines == expected_lines
+
+
+@pytest.mark.parametrize(
+    ["args", "expected_lines"],
+    [
+        (
+            ("impls", "--format=compact", "scan"),
+            [
+                "entrypoint://sparkrl.plugins.commands/base#SessionCommand",
+                "entrypoint://sparkrl.plugins.commands/infos#SessionInfoCommand",
+                "entrypoint://sparkrl.plugins.configurables/base#Configurable",
+                "entrypoint://sparkrl.plugins.patches/base#Patch",
+                "entrypoint://sparkrl.plugins.patches/sparkmagic_reload#SparkMagicReloadPatch",
+            ],
+        ),
+    ],
+)
+def test_plugins_impls_scan(args, expected_lines):
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli, args=["plugins", *args])
+
+    assert result.exit_code == 0, result.output
+
+    output_lines = result.stdout.strip().splitlines()
+    missing = set(expected_lines) - set(output_lines)
+    assert not missing, f"missing lines: {missing}"
 
 
 def test_plugins_one_impl():

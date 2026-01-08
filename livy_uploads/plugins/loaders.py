@@ -11,7 +11,7 @@ __all__ = (
 import dataclasses
 import itertools
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import ClassVar, Optional, TypeVar, Union, cast
@@ -371,6 +371,26 @@ class ImplementationLoader(PluginLoader):
         """
         groups = EntryPointsLoader.parse(value).groups
         return cls(groups=groups)
+
+    @classmethod
+    def merge(cls, loaders: Iterable[Self]) -> Self:
+        """
+        Merges multiple ImplementationLoaders into a single one.
+        """
+        loaders_list = list(loaders)
+        groups: set[str] = set()
+        base_uris: dict[type[Implementation], str] = {}
+
+        for loader in loaders_list:
+            groups.update(loader.groups)
+            base_uris.update(loader.base_uris)
+
+        merged = cls(groups=tuple(sorted(groups)))
+        resolved = all(loader.resolved for loader in loaders_list) if loaders_list else False
+        object.__setattr__(merged, "base_uris", base_uris)
+        object.__setattr__(merged, "resolved", resolved)
+
+        return merged
 
     @property
     def uri(self) -> str:

@@ -17,6 +17,9 @@ from typing_extensions import Self
 from livy_uploads.configs.base import Configurable
 from livy_uploads.configs.utils import split_envvar
 from livy_uploads.patches.base import Patch
+from livy_uploads.plugins import constants
+
+# from livy_uploads.plugins import constants
 
 LOG_LEVEL_ENVVAR = "LOG_LEVEL"
 "The environment variable that specifies the log levels."
@@ -49,7 +52,7 @@ class LoggingConfigurator(Configurable):
 
         The root level is returned with an empty string.
         """
-        return parse_log_levels(os.getenv(LOG_LEVEL_ENVVAR) or "")
+        return parse_log_levels(LOG_DEFAULT_SPEC + "," + (os.getenv(LOG_LEVEL_ENVVAR) or ""))
 
     @property
     def logger(self) -> logging.Logger:
@@ -183,6 +186,9 @@ def parse_log_levels(value: str) -> tuple[LevelSpec, ...]:
     >>> parse_log_levels("INFO,urllib3:WARNING,requests:DEBUG,urllib3:INFO")
     (LevelSpec(level='INFO', name=None), LevelSpec(level='DEBUG', name='requests'), LevelSpec(level='INFO', name='urllib3'))
 
+    >>> parse_log_levels(".plugins:DEBUG")
+    (LevelSpec(level='INFO', name=None), LevelSpec(level='DEBUG', name='livy_uploads.plugins'))
+
     >>> parse_log_levels("NO_SUCH_LEVEL,requests:DEBUG")
     Traceback (most recent call last):
     ...
@@ -194,6 +200,8 @@ def parse_log_levels(value: str) -> tuple[LevelSpec, ...]:
     for spec in specs:
         name, _, level = spec.rpartition(":")
         get_level_by_name(level)
+        if name.startswith("."):
+            name = constants.PACKAGE_NAME + name
         if name and not all(p.isidentifier() for p in name.split(".")):
             raise ValueError(f"bad logger name {name=!r}")
 

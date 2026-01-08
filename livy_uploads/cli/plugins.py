@@ -1,11 +1,11 @@
 import logging
-from typing import Optional, cast, Iterable
+from typing import Iterable, Optional, cast
 
 import click
 
 from livy_uploads.cli.helpers.formats import display_item, display_list, with_compact_option, with_format_option
 from livy_uploads.plugins import Implementation, constants, implementation_as_json
-from livy_uploads.project_new import Project
+from livy_uploads.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,8 +86,7 @@ def impls(ctx: click.Context, format: Optional[str]) -> None:
     all_impls = set[type[Implementation]]()
     ctx.obj = (project, all_impls, format)
 
-    for loader in project.impls:
-        all_impls.update(loader.base_uris.keys())
+    all_impls.update(project.impls.base_uris.keys())
 
     if ctx.invoked_subcommand is not None:
         return
@@ -101,11 +100,10 @@ def impls_scan(ctx: tuple[Project, set[type[Implementation]], Optional[str]]) ->
     "Scan for all available implementations across all loaders"
     project, all_impls, format = ctx
 
-    for loader in project.impls:
-        for base_cls, _ in loader.base_uris.items():
-            LOGGER.debug("scanning implementations in loader %s", loader.uri)
-            for found in loader.find_types(base_cls, pattern="*"):
-                all_impls.add(found.type)
+    for base_cls, uri in project.impls.base_uris.items():
+        LOGGER.debug("scanning implementations in loader %s", project.impls.uri)
+        for found in project.impls.find_types(base_cls, pattern="*"):
+            all_impls.add(found.type)
 
     _display_impls(all_impls, format)
 

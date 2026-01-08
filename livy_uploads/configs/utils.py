@@ -4,8 +4,10 @@ import hashlib
 import importlib.util
 import logging
 import os
-from pathlib import Path
-from typing import Any, Mapping, Optional
+from collections.abc import Iterable, Mapping
+from datetime import date, datetime, time, timedelta
+from pathlib import Path, PurePosixPath
+from typing import Any, Optional
 
 from livy_uploads.utils.datautils import is_module_name
 
@@ -13,27 +15,63 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_HASH_LENGTH = 10
 CACHE_DIRNAME = __name__.partition(".")[0]
 
+SIMPLE_TYPES = (
+    int,
+    float,
+    bool,
+    Path,
+    PurePosixPath,
+    datetime,
+    date,
+    time,
+    timedelta,
+)
 
-def interpolate_envvars(source: Mapping[str, Any], env: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
+
+def interpolate_envvars(
+    source: Mapping[str, Any], env: Optional[Mapping[str, str]] = None, *, _keys: Optional[list[str]] = None
+) -> dict[str, Any]:
     """
+    Recursively interpolate environment variables found in string values within the source
+    (lists, dicts) using the provided env map.
+
     >>> interpolate_envvars({"foo": "${BAR}_${BAR}"}, {"BAR": "baz"})
     {'foo': 'baz_baz'}
     """
     env = env if env is not None else os.environ
-    from dotenv.variables import parse_variables
-
     result: dict[str, Any] = {}
+    _keys = _keys or []
 
     for k, v in source.items():
-        if isinstance(v, str):
-            atoms = parse_variables(v)
-            result[k] = "".join(atom.resolve(env) for atom in atoms)
-        elif isinstance(v, collections.abc.Mapping):
-            result[k] = interpolate_envvars(v, env)
-        else:
-            result[k] = v
-
+        result[k] = _interpolate_value(v, env, _keys + [k])
     return result
+
+
+def _interpolate_value(v: Any, env: Mapping[str, str], keys: list[str]) -> Any:
+    from dotenv.variables import parse_variables
+
+    if v is None:
+        return None
+    elif isinstance(v, str):
+        atoms = parse_variables(v)
+        return "".join(atom.resolve(env) for atom in atoms)
+    elif isinstance(v, SIMPLE_TYPES):
+        return v
+    elif isinstance(v, (bytes, bytearray)):
+        raise ValueError(f"unsupported type {type(v)} at {_join_keys(keys)}")
+    elif isinstance(v, collections.abc.Mapping):
+        return interpolate_envvars(v, env, _keys=keys)
+    elif isinstance(v, collections.abc.Sequence):
+        return [_interpolate_value(item, env, keys + [str(i)]) for i, item in enumerate(v)]
+    else:
+        raise ValueError(f"unsupported type {type(v)} at {_join_keys(keys)}")
+
+
+def _join_keys(keys: list[str]) -> str:
+    if not keys:
+        return "$"
+    else:
+        return "$" + "".join("." + k for k in keys)
 
 
 def split_envvar(value: Optional[str]) -> list[str]:
@@ -121,3 +159,7 @@ def resolve_module_or_path(s: str, basedir: Optional[Path] = None) -> Path:
         raise FileNotFoundError(f"module or path not found: {path!r}")
 
     return path
+
+
+def unique_values(values: Iterable[str]) -> list[str]:
+    return list({v: None for v in values if v}.keys())

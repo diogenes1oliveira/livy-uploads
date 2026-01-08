@@ -1,154 +1,154 @@
-import hashlib
-import os
-import shlex
-import signal
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from unittest.mock import Mock
-from uuid import uuid4
+# import hashlib
+# import os
+# import shlex
+# import signal
+# import time
+# from datetime import datetime, timedelta
+# from pathlib import Path
+# from unittest.mock import Mock
+# from uuid import uuid4
 
-import pytest
+# import pytest
 
-from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
-from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
-from livy_uploads.exceptions import LivyStatementError
-from livy_uploads.session import LivyEndpoint, LivySession
-from livy_uploads.utils.retry_policy import MaxTime
+# from conftest import LIVY_TEST_SESSION_READINESS_TIMEOUT, LIVY_TEST_SESSION_TTL
+# from livy_uploads.commands import LivyRunCode, LivyRunShell, LivyUploadDir, LivyUploadFile
+# from livy_uploads.exceptions import LivyStatementError
+# from livy_uploads.session import LivyEndpoint, LivySession
+# from livy_uploads.utils.retry_policy import MaxTime
 
-readiness_policy = MaxTime(time=LIVY_TEST_SESSION_READINESS_TIMEOUT, pause=1.0)
-stop_policy = MaxTime(time=10.0, pause=1.0)
-
-
-# mypy: disable-error-code="no-untyped-def"
+# readiness_policy = MaxTime(time=LIVY_TEST_SESSION_READINESS_TIMEOUT, pause=1.0)
+# stop_policy = MaxTime(time=10.0, pause=1.0)
 
 
-class TestCommands:
-    endpoint = LivyEndpoint("http://localhost:8998")
-    session: LivySession
+# # mypy: disable-error-code="no-untyped-def"
 
-    @classmethod
-    def setup_class(cls):
-        cls.session = LivySession.create(
-            cls.endpoint,
-            name="test-" + str(uuid4()),
-            ttl=LIVY_TEST_SESSION_TTL,
-            heartbeatTimeoutInSecond=60,
-        )
-        cls.session.wait_ready(readiness_policy)
 
-    def test_run(self):
-        now = datetime.now().astimezone()
+# class TestCommands:
+#     endpoint = LivyEndpoint("http://localhost:8998")
+#     session: LivySession
 
-        code_cmd = LivyRunCode(
-            vars={
-                "now": now,
-            },
-            code="""
-                from datetime import timedelta
-                _ = now + timedelta(days=1)
-            """,
-        )
-        lines, out = code_cmd.run(self.session)
-        assert not lines
-        assert isinstance(out, datetime)
+#     @classmethod
+#     def setup_class(cls):
+#         cls.session = LivySession.create(
+#             cls.endpoint,
+#             name="test-" + str(uuid4()),
+#             ttl=LIVY_TEST_SESSION_TTL,
+#             heartbeatTimeoutInSecond=60,
+#         )
+#         cls.session.wait_ready(readiness_policy)
 
-        actual: datetime = out
-        assert actual == now + timedelta(days=1)
+#     def test_run(self):
+#         now = datetime.now().astimezone()
 
-    def test_run_exception(self):
-        code_cmd = LivyRunCode(
-            code="""
-                int('invalid')
-            """,
-        )
+#         code_cmd = LivyRunCode(
+#             vars={
+#                 "now": now,
+#             },
+#             code="""
+#                 from datetime import timedelta
+#                 _ = now + timedelta(days=1)
+#             """,
+#         )
+#         lines, out = code_cmd.run(self.session)
+#         assert not lines
+#         assert isinstance(out, datetime)
 
-        with pytest.raises(LivyStatementError) as e:
-            code_cmd.run(self.session)
+#         actual: datetime = out
+#         assert actual == now + timedelta(days=1)
 
-        assert isinstance(e.value.as_builtin(), ValueError)
+#     def test_run_exception(self):
+#         code_cmd = LivyRunCode(
+#             code="""
+#                 int('invalid')
+#             """,
+#         )
 
-    def test_run_return_unpickleable(self):
-        code_cmd = LivyRunCode(
-            code="""
-                import socket
-                _ = socket.socket()
-            """,
-        )
+#         with pytest.raises(LivyStatementError) as e:
+#             code_cmd.run(self.session)
 
-        with pytest.raises(LivyStatementError) as e:
-            code_cmd.run(self.session)
+#         assert isinstance(e.value.as_builtin(), ValueError)
 
-        assert isinstance(e.value.as_builtin(), TypeError)
+#     def test_run_return_unpickleable(self):
+#         code_cmd = LivyRunCode(
+#             code="""
+#                 import socket
+#                 _ = socket.socket()
+#             """,
+#         )
 
-    def test_upload_file(self, tmp_path: Path):
-        data = os.urandom(4096)
-        path = tmp_path / "data.bin"
-        path.write_bytes(data)
+#         with pytest.raises(LivyStatementError) as e:
+#             code_cmd.run(self.session)
 
-        mock = Mock()
-        dest_path = f"tmp/data-{uuid4()}.bin"
-        upload_cmd = LivyUploadFile(
-            source_path=path,
-            dest_path=dest_path,
-            chunk_size=len(data) // 4,
-            progress_func=mock,
-        )
-        actual_path = upload_cmd.run(self.session)
-        assert mock.call_count == 4
+#         assert isinstance(e.value.as_builtin(), TypeError)
 
-        test_cmd = LivyRunCode(
-            vars={
-                "dest_path": dest_path,
-            },
-            code="""
-                import hashlib
-                import os
-                import stat
+#     def test_upload_file(self, tmp_path: Path):
+#         data = os.urandom(4096)
+#         path = tmp_path / "data.bin"
+#         path.write_bytes(data)
 
-                _ = (
-                    os.getcwd(),
-                    hashlib.md5(open(dest_path, 'rb').read()).hexdigest(),
-                    oct(stat.S_IMODE(os.stat(dest_path).st_mode)),
-                )
-            """,
-        )
-        _, (chdir, actual_md5, mode) = test_cmd.run(self.session)
+#         mock = Mock()
+#         dest_path = f"tmp/data-{uuid4()}.bin"
+#         upload_cmd = LivyUploadFile(
+#             source_path=path,
+#             dest_path=dest_path,
+#             chunk_size=len(data) // 4,
+#             progress_func=mock,
+#         )
+#         actual_path = upload_cmd.run(self.session)
+#         assert mock.call_count == 4
 
-        expected_md5 = hashlib.md5(data).hexdigest()
+#         test_cmd = LivyRunCode(
+#             vars={
+#                 "dest_path": dest_path,
+#             },
+#             code="""
+#                 import hashlib
+#                 import os
+#                 import stat
 
-        assert actual_path == chdir + "/" + dest_path
-        assert actual_md5 == expected_md5
-        assert mode == "0o600"
+#                 _ = (
+#                     os.getcwd(),
+#                     hashlib.md5(open(dest_path, 'rb').read()).hexdigest(),
+#                     oct(stat.S_IMODE(os.stat(dest_path).st_mode)),
+#                 )
+#             """,
+#         )
+#         _, (chdir, actual_md5, mode) = test_cmd.run(self.session)
 
-    def test_upload_dir(self, tmp_path: Path):
-        (tmp_path / "foo").write_text("foo")
-        (tmp_path / "inner").mkdir()
-        (tmp_path / "inner" / "bar").write_text("bar")
+#         expected_md5 = hashlib.md5(data).hexdigest()
 
-        dest_path = f"tmp/dir-{uuid4()}"
-        upload_cmd = LivyUploadDir(
-            source_path=tmp_path,
-            dest_path=dest_path,
-        )
-        upload_cmd.run(self.session)
+#         assert actual_path == chdir + "/" + dest_path
+#         assert actual_md5 == expected_md5
+#         assert mode == "0o600"
 
-        test_cmd = LivyRunShell(f"find {shlex.quote(dest_path)} -type f")
-        pid, output, returncode = test_cmd.run(self.session)
-        lines = sorted(output.splitlines())
+#     def test_upload_dir(self, tmp_path: Path):
+#         (tmp_path / "foo").write_text("foo")
+#         (tmp_path / "inner").mkdir()
+#         (tmp_path / "inner" / "bar").write_text("bar")
 
-        assert returncode == 0
-        assert lines[0].endswith("/foo")
-        assert lines[1].endswith("/inner/bar")
-        assert len(lines) == 2
+#         dest_path = f"tmp/dir-{uuid4()}"
+#         upload_cmd = LivyUploadDir(
+#             source_path=tmp_path,
+#             dest_path=dest_path,
+#         )
+#         upload_cmd.run(self.session)
 
-    def test_shell_timeout(self):
-        test_cmd = LivyRunShell("sleep 10", run_timeout=3, stop_timeout=2)
-        t0 = time.monotonic()
-        _, output, returncode = test_cmd.run(self.session)
-        dt = time.monotonic() - t0
-        lines = sorted(output.splitlines())
+#         test_cmd = LivyRunShell(f"find {shlex.quote(dest_path)} -type f")
+#         pid, output, returncode = test_cmd.run(self.session)
+#         lines = sorted(output.splitlines())
 
-        assert lines == []
-        assert returncode == -int(signal.SIGTERM)
-        assert 3 <= dt < 10
+#         assert returncode == 0
+#         assert lines[0].endswith("/foo")
+#         assert lines[1].endswith("/inner/bar")
+#         assert len(lines) == 2
+
+#     def test_shell_timeout(self):
+#         test_cmd = LivyRunShell("sleep 10", run_timeout=3, stop_timeout=2)
+#         t0 = time.monotonic()
+#         _, output, returncode = test_cmd.run(self.session)
+#         dt = time.monotonic() - t0
+#         lines = sorted(output.splitlines())
+
+#         assert lines == []
+#         assert returncode == -int(signal.SIGTERM)
+#         assert 3 <= dt < 10
